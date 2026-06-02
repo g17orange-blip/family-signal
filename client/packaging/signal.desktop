@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Signal
+Comment=Peer-to-peer voice, video and text messenger for family
+Exec=signal-client
+Icon=signal
+Categories=Network;InstantMessaging;AudioVideo;
+Terminal=false

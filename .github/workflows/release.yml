@@ -108,9 +108,50 @@ jobs:
           name: signal-setup
           path: client/packaging/Output/signal-setup.exe
 
+  # ------------------------------------------------------------- macOS .dmg
+  macos-dmg:
+    strategy:
+      matrix:
+        include:
+          - { runner: macos-15-intel, arch: x86_64 }  # Intel
+          - { runner: macos-14, arch: arm64 }          # Apple Silicon
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: brew install cmake qt gstreamer dylibbundler
+      - name: Build .dmg
+        run: bash client/packaging/build-dmg.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signal-macos-${{ matrix.arch }}
+          path: build/signal-macos-${{ matrix.arch }}.dmg
+
+  # -------------------------------------------------------- Linux AppImage
+  linux-appimage:
+    runs-on: ubuntu-22.04   # older base for broad glibc compatibility
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config file fuse libfuse2 \
+            qt6-base-dev qt6-websockets-dev libqt6sql6-sqlite qt6-tools-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
+            gstreamer1.0-nice gstreamer1.0-libav gstreamer1.0-x
+      - name: Build AppImage
+        run: bash client/packaging/build-appimage.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signal-linux-appimage
+          path: signal-x86_64.AppImage
+
   # ---------------------------------------------------------------- release
   release:
-    needs: [signaling, windows-installer]
+    needs: [signaling, windows-installer, macos-dmg, linux-appimage]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
@@ -124,3 +165,6 @@ jobs:
             artifacts/signaling-linux-amd64/signaling-linux-amd64
             artifacts/signaling-linux-arm64/signaling-linux-arm64
             artifacts/signal-setup/signal-setup.exe
+            artifacts/signal-macos-x86_64/signal-macos-x86_64.dmg
+            artifacts/signal-macos-arm64/signal-macos-arm64.dmg
+            artifacts/signal-linux-appimage/signal-x86_64.AppImage

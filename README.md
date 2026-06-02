@@ -58,6 +58,28 @@ amd64/arm64 host without runtime dependencies.
 
 ---
 
+## Installing the client (prebuilt)
+
+The easiest path — download the artifact for your platform from the
+[Releases page](https://github.com/g17orange-blip/family-signal/releases),
+no toolchain required:
+
+| Platform | Asset | How to run |
+|---|---|---|
+| Windows | `signal-setup.exe` | Run the installer, follow the prompts. |
+| macOS (Apple Silicon) | `signal-macos-arm64.dmg` | Open the dmg, drag Signal to Applications. |
+| macOS (Intel) | `signal-macos-x86_64.dmg` | Same. |
+| Linux (any distro) | `signal-x86_64.AppImage` | `chmod +x signal-x86_64.AppImage && ./signal-x86_64.AppImage` |
+
+All bundles are self-contained (Qt + GStreamer included). On first launch the
+[setup wizard](#configuring-the-client) asks for your invite code.
+
+macOS and Linux builds are **unsigned**, so the OS may warn on first launch:
+- macOS: right-click the app → **Open** (once), or `xattr -dr com.apple.quarantine /Applications/signal-client.app`.
+- Linux: the AppImage needs FUSE (`sudo apt install libfuse2` on older setups).
+
+To build from source instead, read on.
+
 ## Building the client
 
 ### Linux (Arch)

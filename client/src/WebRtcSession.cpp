@@ -21,7 +21,10 @@
 
 #include "WebRtcSession.h"
 
+#include <QCoreApplication>
 #include <QDebug>
+#include <QDir>
+#include <QFileInfo>
 #include <QPointer>
 
 extern "C" {
@@ -34,10 +37,34 @@ extern "C" {
 
 namespace {
 
+// When the app ships as a relocatable bundle (macOS .app, Linux AppImage),
+// its GStreamer plugins live next to the executable rather than in a system
+// path. Point GStreamer at them before gst_init so webrtcbin & friends load.
+// Harmless on a normal build (the bundled dir simply won't exist).
+void pointGstAtBundledPlugins() {
+    const QDir appDir(QCoreApplication::applicationDirPath());
+    const QStringList candidates = {
+        appDir.filePath(QStringLiteral("../PlugIns/gstreamer-1.0")), // macOS .app
+        appDir.filePath(QStringLiteral("../lib/gstreamer-1.0")),     // *nix layout
+        appDir.filePath(QStringLiteral("gstreamer-1.0")),            // alongside exe
+    };
+    for (const QString &c : candidates) {
+        const QString path = QFileInfo(c).canonicalFilePath();
+        if (!path.isEmpty() && QFileInfo(path).isDir()) {
+            qputenv("GST_PLUGIN_SYSTEM_PATH_1_0", path.toUtf8());
+            const QString scanner = appDir.filePath(QStringLiteral("gst-plugin-scanner"));
+            if (QFileInfo::exists(scanner))
+                qputenv("GST_PLUGIN_SCANNER_1_0", scanner.toUtf8());
+            break;
+        }
+    }
+}
+
 // ---- one-shot GStreamer init -------------------------------------------
 void ensureGstInit() {
     static bool inited = false;
     if (!inited) {
+        pointGstAtBundledPlugins();
         gst_init(nullptr, nullptr);
         inited = true;
     }
