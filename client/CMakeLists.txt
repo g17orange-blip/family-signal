@@ -63,6 +63,8 @@ set(SOURCES
     src/MessageInputBar.h
     src/CallWindow.cpp
     src/CallWindow.h
+    src/FirstRunDialog.cpp
+    src/FirstRunDialog.h
     src/MainWindow.cpp
     src/MainWindow.h
 )

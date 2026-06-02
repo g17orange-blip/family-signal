@@ -112,32 +112,41 @@ windeployqt --release build/signal-client.exe
 
 ## Deploying the server
 
-A cheap 1 vCPU / 1 GB VPS is sufficient. See
-[`server/turn/README.deploy.md`](server/turn/README.deploy.md) for the
-step-by-step procedure: it installs `coturn`, copies the binary, drops a
-`systemd` unit, and opens the firewall.
+A cheap 1 vCPU / 1 GB VPS with a domain name is sufficient. One command sets
+up everything — coturn (STUN + TURN), the signaling server, nginx + Let's
+Encrypt TLS, systemd units and the firewall:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/g17orange-blip/family-signal/main/server/install.sh \
+  | sudo DOMAIN=signal.example.com EMAIL=you@example.com bash
+```
+
+It then prints, for each family member, a ready `config.json` and a one-line
+**invite code** to paste into the client's first-run wizard. See
+[`server/turn/README.deploy.md`](server/turn/README.deploy.md) for details,
+verification, and the manual fallback procedure.
 
 Once running, the server hosts:
-- `ws://your-vps:8080/ws` — signaling WebSocket
-- `udp/tcp 3478` — STUN
+- `wss://your-domain/ws` — signaling WebSocket (TLS via nginx)
+- `udp/tcp 3478` — STUN, plain TURN
+- `tcp 5349` — TURNS (TURN over TLS)
 - `udp 49152–65535` — TURN media relay (only used when direct P2P fails)
-
-Strongly recommended for production: terminate the signaling WebSocket
-behind nginx with a Let's Encrypt certificate so the client uses `wss://`
-instead of plain `ws://`.
 
 ---
 
 ## Configuring the client
 
-First launch creates a stub config file and exits with the path printed in
-an error dialog:
+On first launch the client shows a **setup wizard**: paste the one-line invite
+code that `server/install.sh` printed for this member and it writes the config
+automatically. (There's an "advanced" section for entering the fields by hand.)
+
+The wizard saves to:
 
 - Linux:   `~/.config/signal/config.json`
 - macOS:   `~/Library/Application Support/signal/config.json`
 - Windows: `%APPDATA%\signal\config.json`
 
-Edit it:
+The invite code is just `base64(config.json)`. The file it produces looks like:
 
 ```json
 {

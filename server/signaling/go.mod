@@ -1,4 +1,4 @@
-module github.com/orange/signal/server/signaling
+module github.com/g17orange-blip/family-signal/server/signaling
 
 go 1.22
 

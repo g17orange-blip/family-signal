@@ -5,6 +5,7 @@
 #include "ChatModel.h"
 #include "ChatView.h"
 #include "ContactsModel.h"
+#include "FirstRunDialog.h"
 #include "MessageHistory.h"
 #include "MessageInputBar.h"
 #include "SignalingClient.h"
@@ -118,7 +119,12 @@ void MainWindow::startDemo() {
     statusBar()->showMessage(tr("Демо-режим — серверы не используются"));
 }
 
-bool MainWindow::loadConfigOrShowError() {
+bool MainWindow::ensureConfigured() {
+    if (!m_config.exists()) {
+        // First launch: the wizard fills m_config and writes config.json.
+        FirstRunDialog dlg(&m_config, this);
+        return dlg.exec() == QDialog::Accepted;
+    }
     if (!m_config.load()) {
         QMessageBox::critical(this, tr("Конфигурация"), m_config.errorString());
         return false;

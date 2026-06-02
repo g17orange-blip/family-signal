@@ -138,9 +138,16 @@ void WebRtcSession::buildPipelineIfNeeded() {
     // password must be percent-encoded, but for our two-user prototype we
     // generate the password ourselves and avoid such characters.
     if (!m_config.turn.url.isEmpty() && !m_config.turn.username.isEmpty()) {
-        const QString turnUri = QStringLiteral("turn://%1:%2@%3")
-            .arg(m_config.turn.username, m_config.turn.password,
-                 QString(m_config.turn.url).remove(QStringLiteral("turn:")));
+        // Preserve the scheme: a turns: URL (TLS relay on 5349) must stay
+        // turns://, not be mangled into turn://. Strip the scheme prefix
+        // (and optional //) and re-emit it explicitly.
+        QString hostPort = m_config.turn.url;
+        const bool tls = hostPort.startsWith(QStringLiteral("turns:"));
+        hostPort.remove(0, hostPort.indexOf(QLatin1Char(':')) + 1);
+        if (hostPort.startsWith(QStringLiteral("//"))) hostPort.remove(0, 2);
+        const QString turnUri = QStringLiteral("%1://%2:%3@%4")
+            .arg(tls ? QStringLiteral("turns") : QStringLiteral("turn"),
+                 m_config.turn.username, m_config.turn.password, hostPort);
         gboolean ok = FALSE;
         g_signal_emit_by_name(m_webrtc, "add-turn-server", turnUri.toUtf8().constData(), &ok);
         if (!ok) qWarning() << "webrtcbin rejected TURN URI" << turnUri;

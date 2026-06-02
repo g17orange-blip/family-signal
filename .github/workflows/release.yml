@@ -1,0 +1,126 @@
+name: release
+
+# Builds release artifacts on every v* tag (and on manual dispatch):
+#   - signaling-linux-amd64 / -arm64   (static Go binaries; consumed by server/install.sh)
+#   - signal-setup.exe                  (Windows client installer; no secrets baked in)
+# On a tag push the artifacts are attached to a GitHub Release.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  GST_VERSION: "1.24.10"
+  QT_VERSION: "6.7.3"
+
+jobs:
+  # ---------------------------------------------------------------- signaling
+  signaling:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: server/signaling/go.sum
+      - name: Build static binary
+        working-directory: server/signaling
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -trimpath -ldflags "-s -w" -o "signaling-linux-${GOARCH}" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signaling-linux-${{ matrix.goarch }}
+          path: server/signaling/signaling-linux-${{ matrix.goarch }}
+
+  # -------------------------------------------------------- windows installer
+  windows-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2019_64
+          modules: qtwebsockets
+          cache: true
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install pkg-config
+        run: choco install --no-progress pkgconfiglite
+
+      - name: Install GStreamer (runtime + devel)
+        shell: pwsh
+        run: |
+          $base = "https://gstreamer.freedesktop.org/data/pkg/windows/$env:GST_VERSION/msvc"
+          foreach ($pkg in @("gstreamer-1.0-msvc-x86_64", "gstreamer-1.0-devel-msvc-x86_64")) {
+            $msi = "$env:RUNNER_TEMP\$pkg.msi"
+            Invoke-WebRequest "$base/$pkg-$env:GST_VERSION.msi" -OutFile $msi
+            Start-Process msiexec.exe -Wait -ArgumentList "/i `"$msi`" /qn ADDLOCAL=ALL"
+          }
+          $root = "C:\gstreamer\1.0\msvc_x86_64"
+          "GSTREAMER_ROOT=$root"                  | Out-File $env:GITHUB_ENV -Append
+          "PKG_CONFIG_PATH=$root\lib\pkgconfig"   | Out-File $env:GITHUB_ENV -Append
+          "$root\bin"                             | Out-File $env:GITHUB_PATH -Append
+
+      - name: Configure & build
+        shell: pwsh
+        run: |
+          cmake -B build -S client -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+
+      - name: Stage runtime (windeployqt + GStreamer)
+        shell: pwsh
+        run: |
+          $dist = "build\dist"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          Copy-Item build\signal-client.exe $dist
+          windeployqt --release --no-translations "$dist\signal-client.exe"
+          # Core GStreamer runtime DLLs + the plugins webrtcbin/media path needs.
+          Copy-Item "$env:GSTREAMER_ROOT\bin\*.dll" $dist -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path "$dist\gstreamer-1.0" | Out-Null
+          Copy-Item "$env:GSTREAMER_ROOT\lib\gstreamer-1.0\*.dll" "$dist\gstreamer-1.0" -ErrorAction SilentlyContinue
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          choco install --no-progress innosetup
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          & $iscc "/DMyAppSrc=$(Resolve-Path build\dist)" client\packaging\signal.iss
+          # ISCC writes the installer to client\packaging\Output\signal-setup.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signal-setup
+          path: client/packaging/Output/signal-setup.exe
+
+  # ---------------------------------------------------------------- release
+  release:
+    needs: [signaling, windows-installer]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/signaling-linux-amd64/signaling-linux-amd64
+            artifacts/signaling-linux-arm64/signaling-linux-arm64
+            artifacts/signal-setup/signal-setup.exe

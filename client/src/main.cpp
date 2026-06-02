@@ -22,7 +22,8 @@ int main(int argc, char *argv[]) {
     if (demoMode) {
         w.startDemo();
     } else {
-        if (!w.loadConfigOrShowError()) return 1;
+        // First launch shows the setup wizard; cancelling it exits cleanly.
+        if (!w.ensureConfigured()) return 0;
         w.start();
     }
     w.show();

@@ -23,7 +23,10 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
-    bool loadConfigOrShowError();
+    // Ensures a usable config exists: loads config.json, or — on first launch
+    // when none exists — runs the setup wizard (FirstRunDialog) to create one.
+    // Returns false if the user cancels the wizard or the config is invalid.
+    bool ensureConfigured();
     void start();
 
     // Demo mode: skips signaling and GStreamer entirely, seeds a fake

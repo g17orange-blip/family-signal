@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QJsonObject>
 #include <QString>
 #include <QUrl>
 #include <QVector>
@@ -23,10 +24,19 @@ struct TurnConfig {
 
 class Config {
 public:
-    // Loads (or creates with defaults) from the platform-specific path.
-    // Returns true on success; on failure errorString() explains why.
+    // Loads from the platform-specific path. Returns true on success; on
+    // failure errorString() explains why. Use exists() to distinguish a
+    // missing file (→ run the first-run wizard) from a malformed one.
     bool load();
     bool save() const;
+    bool exists() const;
+
+    // Invite code: base64(config.json). Produced by server/install.sh, pasted
+    // into the first-run wizard. applyInvite fills this Config from the code
+    // (returns false + errorString on malformed input); encodeInvite is the
+    // inverse, handy for sharing.
+    bool applyInvite(const QString &code);
+    QString encodeInvite() const;
 
     QString configPath() const;
     QString errorString() const { return m_error; }
@@ -48,5 +58,9 @@ public:
     TurnConfig turn;       // empty fields → TURN disabled
 
 private:
-    QString m_error;
+    // Shared JSON (de)serialization used by load/save and the invite codec.
+    QJsonObject toJsonObject() const;
+    bool fromJsonObject(const QJsonObject &root);
+
+    mutable QString m_error;
 };
