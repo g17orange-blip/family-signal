@@ -1,0 +1,92 @@
+/* Dark theme. Distinct from Telegram's blue accents — uses a teal-green
+   accent so the visual identity isn't confusable, while keeping the
+   familiar three-pane layout and bubble shapes a Telegram user expects. */
+
+QMainWindow,
+QWidget {
+    background-color: #1E2226;
+    color: #E6E9EC;
+    font-family: "Segoe UI", "Inter", "Noto Sans", "PingFang SC", sans-serif;
+    font-size: 14px;
+}
+
+QStatusBar {
+    background: #16191C;
+    color: #8E969E;
+    border-top: 1px solid #2A2F34;
+}
+
+QSplitter::handle {
+    background: #2A2F34;
+    width: 1px;
+}
+
+/* Contacts list */
+QListView#contactsView {
+    background: #181C20;
+    border: none;
+    padding: 6px 0;
+}
+QListView#contactsView::item {
+    padding: 12px 16px;
+    border: none;
+    color: #E6E9EC;
+}
+QListView#contactsView::item:selected {
+    background: #18B98C;
+    color: white;
+}
+QListView#contactsView::item:hover:!selected {
+    background: #232830;
+}
+
+/* Chat header */
+QWidget#chatHeader {
+    background: #1A1E22;
+    border-bottom: 1px solid #2A2F34;
+}
+QLabel#chatHeaderName {
+    color: #E6E9EC;
+    font-weight: 600;
+    font-size: 15px;
+}
+QLabel#chatHeaderStatus {
+    color: #8E969E;
+    font-size: 12px;
+}
+
+/* Tool buttons in the header */
+QToolButton {
+    color: #C0C8CF;
+    font-size: 18px;
+    padding: 6px;
+    border-radius: 6px;
+}
+QToolButton:hover {
+    background: #232830;
+}
+QToolButton:disabled {
+    color: #4A5057;
+}
+
+/* Input bar */
+QWidget#messageInputBar {
+    background: #1A1E22;
+    border-top: 1px solid #2A2F34;
+}
+
+/* Scroll bars */
+QScrollBar:vertical {
+    background: transparent;
+    width: 8px;
+    margin: 0;
+}
+QScrollBar::handle:vertical {
+    background: #3A4047;
+    border-radius: 4px;
+    min-height: 24px;
+}
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0;
+}

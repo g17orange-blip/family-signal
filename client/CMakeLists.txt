@@ -1,0 +1,89 @@
+cmake_minimum_required(VERSION 3.21)
+project(signal-client LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
+set(CMAKE_AUTOUIC ON)
+
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
+endif()
+
+# --- Qt6 ------------------------------------------------------------------
+find_package(Qt6 6.5 REQUIRED COMPONENTS
+    Core
+    Gui
+    Widgets
+    Network
+    WebSockets
+    Sql
+)
+
+# --- GStreamer (via pkg-config; install via your package manager) ----------
+# Arch:    sudo pacman -S gstreamer gst-plugins-base gst-plugins-good \
+#                       gst-plugins-bad gst-plugins-ugly gst-libav
+# macOS:   brew install gstreamer  (Homebrew installs all the plugin subsets as deps)
+#          — or use the official installer from gstreamer.freedesktop.org and
+#          export PKG_CONFIG_PATH=/Library/Frameworks/GStreamer.framework/Versions/1.0/lib/pkgconfig
+# Windows: use the MSYS2 mingw64 packages, or the official gstreamer.freedesktop.org installers
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GST REQUIRED IMPORTED_TARGET
+    gstreamer-1.0
+    gstreamer-sdp-1.0
+    gstreamer-webrtc-1.0
+    gstreamer-video-1.0
+)
+
+# --- Sources --------------------------------------------------------------
+set(SOURCES
+    src/main.cpp
+    src/Config.cpp
+    src/Config.h
+    src/SignalingClient.cpp
+    src/SignalingClient.h
+    src/WebRtcSession.cpp
+    src/WebRtcSession.h
+    src/Contact.h
+    src/ContactsModel.cpp
+    src/ContactsModel.h
+    src/Message.h
+    src/MessageHistory.cpp
+    src/MessageHistory.h
+    src/ChatModel.cpp
+    src/ChatModel.h
+    src/MessageBubbleDelegate.cpp
+    src/MessageBubbleDelegate.h
+    src/ChatView.cpp
+    src/ChatView.h
+    src/ChatHeader.cpp
+    src/ChatHeader.h
+    src/MessageInputBar.cpp
+    src/MessageInputBar.h
+    src/CallWindow.cpp
+    src/CallWindow.h
+    src/MainWindow.cpp
+    src/MainWindow.h
+)
+
+qt6_add_resources(SOURCES resources/resources.qrc)
+
+add_executable(signal-client ${SOURCES})
+
+target_link_libraries(signal-client PRIVATE
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Widgets
+    Qt6::Network
+    Qt6::WebSockets
+    Qt6::Sql
+    PkgConfig::GST
+)
+
+if(WIN32)
+    set_target_properties(signal-client PROPERTIES WIN32_EXECUTABLE TRUE)
+endif()
+if(APPLE)
+    set_target_properties(signal-client PROPERTIES MACOSX_BUNDLE TRUE)
+endif()

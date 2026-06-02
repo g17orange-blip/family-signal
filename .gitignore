@@ -1,0 +1,57 @@
+# Build outputs
+build/
+build-*/
+out/
+dist/
+
+# C/C++/Qt artifacts
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.pdb
+*.ilk
+*.exp
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+compile_commands.json
+moc_*.cpp
+moc_*.h
+ui_*.h
+qrc_*.cpp
+*.qmlc
+*.jsc
+.qt/
+.cache/
+
+# Go artifacts
+/server/signaling/signaling
+signaling.exe
+*.test
+vendor/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Claude Code session state
+.claude/
+
+# Local config / secrets
+*.local
+.env
+.env.*
+turnserver.conf
