@@ -72,7 +72,20 @@ jobs:
             Invoke-WebRequest "$base/$pkg-$env:GST_VERSION.msi" -OutFile $msi
             Start-Process msiexec.exe -Wait -ArgumentList "/i `"$msi`" /qn ADDLOCAL=ALL"
           }
-          $root = "C:\gstreamer\1.0\msvc_x86_64"
+          # The MSI registers its install root as a machine env var; don't assume C:\gstreamer.
+          $root = [Environment]::GetEnvironmentVariable('GSTREAMER_1_0_ROOT_MSVC_X86_64', 'Machine')
+          if (-not $root) {
+            $root = @("C:\gstreamer\1.0\msvc_x86_64", "$env:ProgramFiles\gstreamer\1.0\msvc_x86_64") |
+              Where-Object { Test-Path "$_\lib\pkgconfig\gstreamer-1.0.pc" } | Select-Object -First 1
+          }
+          $root = "$root".TrimEnd('\')
+          Write-Host "GStreamer root: $root"
+          if (-not $root -or -not (Test-Path "$root\lib\pkgconfig\gstreamer-1.0.pc")) {
+            Write-Host "gstreamer-1.0.pc not found under '$root' — dumping installed layout for diagnosis:"
+            Get-ChildItem -Path "C:\gstreamer", "$env:ProgramFiles\gstreamer" -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+              Select-Object -ExpandProperty FullName -First 80
+            throw "GStreamer devel files missing after MSI install"
+          }
           "GSTREAMER_ROOT=$root"                  | Out-File $env:GITHUB_ENV -Append
           "PKG_CONFIG_PATH=$root\lib\pkgconfig"   | Out-File $env:GITHUB_ENV -Append
           "$root\bin"                             | Out-File $env:GITHUB_PATH -Append
@@ -135,6 +148,9 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
+          # Preinstalled libunwind-14-dev (LLVM) conflicts with libunwind-dev,
+          # which libgstreamer1.0-dev depends on — a known ubuntu-22.04 runner quirk.
+          sudo apt-get remove -y libunwind-14-dev || true
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build pkg-config file fuse libfuse2 \
             qt6-base-dev qt6-base-dev-tools libqt6websockets6-dev libqt6sql6-sqlite qt6-tools-dev \
