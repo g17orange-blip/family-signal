@@ -55,7 +55,20 @@ prompt_if_empty EMAIL   "Email for Let's Encrypt notices"
 [[ -n "$DOMAIN" && -n "$EMAIL" ]] || die "DOMAIN and EMAIL are required"
 
 # Collect family members: id + display name, two or more.
+# Non-interactive: MEMBERS="id:Name,id2:Name2,..." skips the prompts.
 declare -a MEMBER_IDS=() MEMBER_NAMES=()
+if [[ -n "${MEMBERS:-}" ]]; then
+  IFS=',' read -ra _pairs <<< "$MEMBERS"
+  for p in "${_pairs[@]}"; do
+    p="${p#"${p%%[![:space:]]*}"}"; p="${p%"${p##*[![:space:]]}"}"  # trim
+    [[ -z "$p" ]] && continue
+    mid="${p%%:*}"
+    if [[ "$p" == *:* ]]; then mname="${p#*:}"; else mname="$mid"; fi
+    MEMBER_IDS+=("$mid"); MEMBER_NAMES+=("$mname")
+  done
+  (( ${#MEMBER_IDS[@]} >= 2 )) || die "MEMBERS needs at least 2 entries (format: id:Name,id2:Name2)"
+  ok "members from \$MEMBERS: ${MEMBER_IDS[*]}"
+else
 step "Family members (blank id when done; at least 2):"
 while true; do
   mid=""; mname=""
@@ -68,6 +81,7 @@ while true; do
   [[ -z "$mname" ]] && mname="$mid"
   MEMBER_IDS+=("$mid"); MEMBER_NAMES+=("$mname")
 done
+fi
 
 # --- public IP & DNS sanity ----------------------------------------------
 step "Detecting public IP"
