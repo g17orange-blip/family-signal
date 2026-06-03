@@ -134,12 +134,18 @@ install_from_source() {
 }
 if [[ "$BUILD_SIGNALING" -eq 1 ]]; then
   install_from_source
-elif curl -fsSL -o /usr/local/bin/signaling "$ASSET_URL"; then
-  chmod 755 /usr/local/bin/signaling
+elif curl -fsSL -o /usr/local/bin/signaling.download "$ASSET_URL"; then
+  install -m 755 /usr/local/bin/signaling.download /usr/local/bin/signaling
+  rm -f /usr/local/bin/signaling.download
   ok "downloaded prebuilt binary ($ARCH)"
 else
+  rm -f /usr/local/bin/signaling.download
   warn "no release asset at $ASSET_URL"
-  install_from_source
+  if [[ -x /usr/local/bin/signaling ]]; then
+    warn "reusing existing /usr/local/bin/signaling"
+  else
+    install_from_source
+  fi
 fi
 [[ -x /usr/local/bin/signaling ]] || die "signaling binary missing"
 ok "signaling installed"
