@@ -145,6 +145,14 @@ jobs:
     runs-on: ubuntu-22.04   # older base for broad glibc compatibility
     steps:
       - uses: actions/checkout@v4
+      # Ubuntu 22.04's apt Qt is 6.2, below our 6.5 minimum — use the official
+      # Qt build (same as the Windows job); apt provides GStreamer and tools.
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          modules: qtwebsockets
+          cache: true
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
@@ -153,13 +161,16 @@ jobs:
           sudo apt-get remove -y libunwind-14-dev || true
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build pkg-config file fuse libfuse2 \
-            qt6-base-dev qt6-base-dev-tools libqt6websockets6-dev libqt6sql6-sqlite qt6-tools-dev \
+            libxcb-cursor0 libxkbcommon-x11-0 \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
             gstreamer1.0-nice gstreamer1.0-libav gstreamer1.0-x
       - name: Build AppImage
-        run: bash client/packaging/build-appimage.sh
+        run: |
+          export CMAKE_PREFIX_PATH="$QT_ROOT_DIR"
+          export QMAKE="$QT_ROOT_DIR/bin/qmake"
+          bash client/packaging/build-appimage.sh
       - uses: actions/upload-artifact@v4
         with:
           name: signal-linux-appimage
