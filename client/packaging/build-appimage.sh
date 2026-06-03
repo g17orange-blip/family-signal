@@ -8,7 +8,7 @@
 #
 # Build deps (Debian/Ubuntu):
 #   sudo apt install -y build-essential cmake ninja-build pkg-config \
-#     qt6-base-dev qt6-websockets-dev libqt6sql6-sqlite \
+#     qt6-base-dev qt6-base-dev-tools libqt6websockets6-dev libqt6sql6-sqlite \
 #     libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
 #     gstreamer1.0-plugins-{base,good,bad,ugly} gstreamer1.0-nice gstreamer1.0-libav
 #

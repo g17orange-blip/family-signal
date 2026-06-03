@@ -14,7 +14,7 @@ permissions:
   contents: write
 
 env:
-  GST_VERSION: "1.24.10"
+  GST_VERSION: "1.26.11"
   QT_VERSION: "6.7.3"
 
 jobs:
@@ -137,7 +137,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build pkg-config file fuse libfuse2 \
-            qt6-base-dev qt6-websockets-dev libqt6sql6-sqlite qt6-tools-dev \
+            qt6-base-dev qt6-base-dev-tools libqt6websockets6-dev libqt6sql6-sqlite qt6-tools-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
