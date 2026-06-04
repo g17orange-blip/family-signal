@@ -374,7 +374,8 @@ void WebRtcSession::buildPipelineIfNeeded() {
                 GstSample *sample = nullptr;
                 g_signal_emit_by_name(sink, "pull-sample", &sample);
                 if (!sample) return GST_FLOW_OK;
-                int w = 0, h = 0;
+                int w = 0;
+                int h = 0;
                 if (GstCaps *scaps = gst_sample_get_caps(sample)) {
                     if (const GstStructure *st = gst_caps_get_structure(scaps, 0)) {
                         gst_structure_get_int(st, "width", &w);
