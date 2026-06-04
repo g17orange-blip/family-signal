@@ -33,7 +33,9 @@ Write-Host "==> Staging runtime"
 $dist = Join-Path $BuildDir "dist"
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 Copy-Item (Join-Path $BuildDir "signal-client.exe") $dist
-& "$QtDir\bin\windeployqt.exe" --release --no-translations (Join-Path $dist "signal-client.exe")
+# --compiler-runtime: ship vcruntime140/msvcp140 next to the exe (a fresh
+# Windows has no VC++ redistributable installed).
+& "$QtDir\bin\windeployqt.exe" --release --no-translations --compiler-runtime (Join-Path $dist "signal-client.exe")
 Copy-Item "$GstRoot\bin\*.dll" $dist -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path (Join-Path $dist "gstreamer-1.0") | Out-Null
 Copy-Item "$GstRoot\lib\gstreamer-1.0\*.dll" (Join-Path $dist "gstreamer-1.0") -ErrorAction SilentlyContinue

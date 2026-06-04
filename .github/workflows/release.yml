@@ -102,7 +102,14 @@ jobs:
           $dist = "build\dist"
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
           Copy-Item build\signal-client.exe $dist
-          windeployqt --release --no-translations "$dist\signal-client.exe"
+          # --compiler-runtime ships vcruntime140/msvcp140 etc. next to the
+          # exe — a fresh Windows install has no VC++ redistributable.
+          windeployqt --release --no-translations --compiler-runtime "$dist\signal-client.exe"
+          if (-not (Test-Path "$dist\vcruntime140.dll")) {
+            Write-Host "windeployqt didn't copy the VC runtime — copying from the MSVC redist dir"
+            $redist = Get-ChildItem "$env:VCToolsRedistDir\x64\Microsoft.VC*.CRT" -Directory | Select-Object -First 1
+            Copy-Item "$($redist.FullName)\*.dll" $dist
+          }
           # Core GStreamer runtime DLLs + the plugins webrtcbin/media path needs.
           Copy-Item "$env:GSTREAMER_ROOT\bin\*.dll" $dist -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path "$dist\gstreamer-1.0" | Out-Null

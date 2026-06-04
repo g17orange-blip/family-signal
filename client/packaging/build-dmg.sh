@@ -59,6 +59,14 @@ dylibbundler -cd -of -b \
   -d "$APP/Contents/libs" -p @executable_path/../libs \
   "${fix_args[@]}"
 
+# dylibbundler rewrites install names, which invalidates the linker's ad-hoc
+# code signatures — Apple Silicon then refuses to launch the app with a
+# misleading "damaged" dialog. Re-sign everything ad-hoc (no certificate
+# needed; users still right-click→Open the unidentified-developer app once).
+echo "==> Re-signing (ad-hoc)"
+codesign --force --deep -s - "$APP"
+codesign --verify --deep "$APP" && echo "    signature OK"
+
 echo "==> Creating dmg"
 DMG="$BUILD_DIR/signal-macos-$ARCH.dmg"
 rm -f "$DMG"
