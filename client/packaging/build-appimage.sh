@@ -28,7 +28,8 @@ echo "==> Fetching linuxdeploy + plugins"
 mkdir -p "$TOOLS"
 base="https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous"
 qtbase="https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous"
-gstbase="https://github.com/linuxdeploy/linuxdeploy-plugin-gstreamer/releases/download/continuous"
+# the gstreamer plugin is a plain script in the repo — it has no release assets
+gstbase="https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gstreamer/master"
 fetch() { [ -f "$TOOLS/$1" ] || curl -fsSL -o "$TOOLS/$1" "$2"; chmod +x "$TOOLS/$1"; }
 fetch "linuxdeploy"           "$base/linuxdeploy-$ARCH.AppImage"
 fetch "linuxdeploy-plugin-qt" "$qtbase/linuxdeploy-plugin-qt-$ARCH.AppImage"
