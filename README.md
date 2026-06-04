@@ -220,13 +220,17 @@ client's `user_id` matches the other's `peers[].id`.
 
 ---
 
-## Status
+## Status — v0.1.0
 
-- ✅ Server compiles and runs.
-- ⚠️ Client compiles only after Qt 6 + GStreamer are installed; not yet
-  smoke-tested end-to-end.
-- TODO: pin remote peer's public key (libsodium X25519) instead of the
-  current shared-secret token.
-- TODO: confirm `glimagesink` embedding works on each of the three
-  target platforms; fall back to platform-specific sinks if needed.
-- TODO: hardware H.264 decode path on Celeron (DXVA / Quick Sync).
+Tested end-to-end (macOS ↔ Windows) against a live server:
+
+- ✅ Text messaging without calls (background DataChannel sessions),
+  offline queue with delivery acks and read receipts, history encrypted
+  at rest, paginated conversations.
+- ✅ Voice and video calls with accept/decline, self-view, echo
+  cancellation (Windows/Linux), busy handling, call log pills in the chat.
+- ✅ One-command server install, invite-code onboarding, prebuilt
+  installers for Windows/macOS/Linux.
+
+Planned next (v0.2.0): photo/video sending over the same encrypted
+DataChannel; macOS echo cancellation; remote peer public-key pinning.
