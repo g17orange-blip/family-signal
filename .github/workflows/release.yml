@@ -171,6 +171,10 @@ jobs:
         run: |
           export CMAKE_PREFIX_PATH="$QT_ROOT_DIR"
           export QMAKE="$QT_ROOT_DIR/bin/qmake"
+          # linuxdeploy-plugin-qt chokes on exotic Qt SQL drivers whose system
+          # libs aren't installed (Mimer needs libmimerapi.so, etc.). We only
+          # use the bundled sqlite driver — drop the rest before deploying.
+          find "$QT_ROOT_DIR/plugins/sqldrivers" -name 'libqsql*.so' ! -name 'libqsqlite.so' -print -delete
           bash client/packaging/build-appimage.sh
       - uses: actions/upload-artifact@v4
         with:
