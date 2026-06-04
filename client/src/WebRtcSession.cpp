@@ -313,10 +313,12 @@ void WebRtcSession::buildPipelineIfNeeded() {
     // Both previous approaches died: a second GL overlay window got "Quit
     // requested" when restacked, and compositing into the remote frame put
     // the preview under the window's control strip.
+    // Width-only caps: the height follows the camera's real aspect ratio
+    // (squeezing a 16:9 sensor into 4:3 looked awful).
     const QByteArray selfPip = m_withVideo ?
         "selftee. ! queue max-size-buffers=2 leaky=downstream ! "
         "  videoconvert ! videoscale ! "
-        "  video/x-raw,format=RGBA,width=160,height=120 ! "
+        "  video/x-raw,format=RGBA,width=176 ! "
         "  appsink name=selfsink max-buffers=1 drop=true sync=false " : "";
     const QByteArray videoBranch = m_withVideo ?
         "autovideosrc ! videoconvert ! videoscale ! "
@@ -372,10 +374,18 @@ void WebRtcSession::buildPipelineIfNeeded() {
                 GstSample *sample = nullptr;
                 g_signal_emit_by_name(sink, "pull-sample", &sample);
                 if (!sample) return GST_FLOW_OK;
-                if (GstBuffer *buf = gst_sample_get_buffer(sample)) {
+                int w = 0, h = 0;
+                if (GstCaps *scaps = gst_sample_get_caps(sample)) {
+                    if (const GstStructure *st = gst_caps_get_structure(scaps, 0)) {
+                        gst_structure_get_int(st, "width", &w);
+                        gst_structure_get_int(st, "height", &h);
+                    }
+                }
+                GstBuffer *buf = gst_sample_get_buffer(sample);
+                if (buf && w > 0 && h > 0) {
                     GstMapInfo map;
                     if (gst_buffer_map(buf, &map, GST_MAP_READ)) {
-                        const QImage frame(map.data, 160, 120, 160 * 4,
+                        const QImage frame(map.data, w, h, w * 4,
                                            QImage::Format_RGBA8888);
                         emit self->selfFrame(frame.copy());
                         gst_buffer_unmap(buf, &map);

@@ -21,7 +21,16 @@ public:
     }
     void setFrame(const QImage &frame) {
         m_frame = frame;
-        if (!isVisible()) { show(); raise(); }
+        // Match the camera's aspect ratio (fixed width, derived height).
+        if (!frame.isNull()) {
+            const int w = 176;
+            const int h = qMax(1, frame.height() * w / qMax(1, frame.width()));
+            if (size() != QSize(w, h)) setFixedSize(w, h);
+        }
+        if (!isVisible()) show();
+        // The remote video's native surface is created mid-call and would
+        // stack above us — keep climbing back on top.
+        raise();
         update();
     }
 protected:
@@ -106,8 +115,8 @@ quintptr CallWindow::videoHandle() const {
 }
 
 void CallWindow::setSelfFrame(const QImage &frame) {
-    repositionSelfView();
     m_selfView->setFrame(frame);
+    repositionSelfView();   // after: the frame may have changed the size
 }
 
 void CallWindow::setSelfViewVisible(bool visible) {
