@@ -483,8 +483,6 @@ void MainWindow::startOutgoingCall(bool withVideo) {
     w->show();
     m_webrtc->prepare(withVideo);
     m_webrtc->setVideoWindowHandle(w->videoHandle());
-    w->setSelfViewVisible(withVideo);
-    m_webrtc->setSelfViewHandle(withVideo ? w->selfViewHandle() : 0);
     if (!m_webrtc->start()) {
         statusBar()->showMessage(tr("Не удалось запустить камеру/микрофон"), 5000);
         w->hide();
@@ -535,8 +533,6 @@ void MainWindow::onAcceptIncomingCall() {
     w->setStatus(tr("Соединяем…"));
     m_webrtc->prepare(offer.video);
     m_webrtc->setVideoWindowHandle(w->videoHandle());
-    w->setSelfViewVisible(offer.video);
-    m_webrtc->setSelfViewHandle(offer.video ? w->selfViewHandle() : 0);
     if (!m_webrtc->start()) {
         statusBar()->showMessage(tr("Не удалось запустить камеру/микрофон"), 5000);
         w->hide();

@@ -91,6 +91,18 @@ GstWebRTCSessionDescription *makeSessionDescription(const char *type, const QByt
     return gst_webrtc_session_description_new(kind, msg);
 }
 
+// webrtcbin's nice agent insists on the stun://host:port form; the config
+// carries the conventional stun:host:port. Without this fix STUN was
+// silently skipped ("has no host" in the logs) and connectivity relied on
+// host candidates + TURN only.
+QByteArray stunUri(const QString &configured) {
+    QString s = configured;
+    if (s.startsWith(QStringLiteral("stun:")) &&
+        !s.startsWith(QStringLiteral("stun://")))
+        s.replace(0, 5, QStringLiteral("stun://"));
+    return s.toUtf8();
+}
+
 // Platform-priority video sinks, all GstVideoOverlay-capable. Windows
 // first tries Direct3D 11: glimagesink needs GL shader support that older
 // GPUs/drivers (the target hardware!) often lack.
@@ -263,7 +275,7 @@ void WebRtcSession::buildPipelineIfNeeded() {
         }
         g_object_set(m_webrtc,
                      "bundle-policy", GST_WEBRTC_BUNDLE_POLICY_MAX_BUNDLE,
-                     "stun-server", m_config.stunUrl.toUtf8().constData(),
+                     "stun-server", stunUri(m_config.stunUrl).constData(),
                      nullptr);
         gst_bin_add(GST_BIN(m_pipeline), m_webrtc);
         gst_object_ref(m_webrtc);   // match the parse_launch path's get_by_name ref
@@ -291,12 +303,25 @@ void WebRtcSession::buildPipelineIfNeeded() {
 
     const QByteArray core =
         "webrtcbin name=webrtc bundle-policy=max-bundle "
-        "  stun-server=" + m_config.stunUrl.toUtf8() + " ";
+        "  stun-server=" + stunUri(m_config.stunUrl) + " ";
     // Audio-only calls skip the whole camera branch — the camera LED never
     // lights up and the SDP carries no video m-line.
     // No hard framerate in the caps: plenty of webcams (especially on
     // Windows via Media Foundation) can't do exactly 30/1 at 640x480 and
     // the whole pipeline then fails to negotiate. Let the camera pick.
+    // The local preview is COMPOSITED into the remote picture (PiP in the
+    // bottom-right) rather than rendered in a second overlay window — a
+    // separate GL surface for the self-view dies with "Quit requested"
+    // when its little native window gets restacked/hidden (seen on macOS).
+    // Remote video plugs into comp.sink_0 when it arrives (zorder 0);
+    // until then the user sees themselves on black — instant feedback
+    // that the camera works.
+    const QByteArray selfPip = (m_withVideo && m_videoHandle) ?
+        "selftee. ! queue max-size-buffers=2 leaky=downstream ! "
+        "  videoscale ! video/x-raw,width=160,height=120 ! comp.sink_1 "
+        "compositor name=comp background=black "
+        "  sink_1::xpos=468 sink_1::ypos=348 sink_1::zorder=2 ! "
+        "  video/x-raw,width=640,height=480 ! videoconvert name=compout " : "";
     const QByteArray videoBranch = m_withVideo ?
         "autovideosrc ! videoconvert ! videoscale ! "
         "  video/x-raw,width=640,height=480 ! "
@@ -305,7 +330,8 @@ void WebRtcSession::buildPipelineIfNeeded() {
         "  x264enc tune=zerolatency speed-preset=ultrafast bitrate=600 key-int-max=30 ! "
         "  video/x-h264,profile=constrained-baseline ! "
         "  rtph264pay config-interval=1 pt=96 ! "
-        "  application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtc. " : "";
+        "  application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtc. "
+        + selfPip : QByteArray();
     // With AEC the playback side must exist BEFORE webrtcdsp processes its
     // first mic buffer ("No echo probe ... found" kills the pipeline
     // otherwise). Build it statically: a silent live source keeps the mixer
@@ -338,22 +364,17 @@ void WebRtcSession::buildPipelineIfNeeded() {
     }
     m_webrtc = gst_bin_get_by_name(GST_BIN(m_pipeline), "webrtc");
 
-    // Local camera preview ("self view"): a second branch off the capture
-    // tee into a small overlay square in the call window.
-    if (m_withVideo && m_selfViewHandle) {
-        if (GstElement *tee = gst_bin_get_by_name(GST_BIN(m_pipeline), "selftee")) {
-            GstElement *q    = gst_element_factory_make("queue", nullptr);
-            GstElement *conv = gst_element_factory_make("videoconvert", nullptr);
-            GstElement *sink = makeVideoSink();
-            if (q && conv && sink) {
-                g_object_set(q, "max-size-buffers", 2, "leaky", 2 /*downstream*/, nullptr);
+    // Finish the composited video output: the parse string ends at the
+    // named videoconvert; the actual overlay sink is platform-specific.
+    if (GstElement *out = gst_bin_get_by_name(GST_BIN(m_pipeline), "compout")) {
+        if (GstElement *sink = makeVideoSink()) {
+            if (m_videoHandle)
                 gst_video_overlay_set_window_handle(
-                    GST_VIDEO_OVERLAY(sink), static_cast<guintptr>(m_selfViewHandle));
-                gst_bin_add_many(GST_BIN(m_pipeline), q, conv, sink, nullptr);
-                gst_element_link_many(tee, q, conv, sink, nullptr);
-            }
-            gst_object_unref(tee);
+                    GST_VIDEO_OVERLAY(sink), static_cast<guintptr>(m_videoHandle));
+            gst_bin_add(GST_BIN(m_pipeline), sink);
+            gst_element_link(out, sink);
         }
+        gst_object_unref(out);
     }
 
     attachWebrtcSignals();
@@ -617,6 +638,36 @@ void WebRtcSession::onIncomingStream(void *padPtr) {
             const gchar *name = gst_structure_get_name(str);
             GstElement *sink = nullptr;
             if (g_str_has_prefix(name, "video/")) {
+                // Remote video joins the compositor (full-frame, beneath the
+                // self-view PiP) when the call pipeline has one.
+                if (GstElement *comp =
+                        gst_bin_get_by_name(GST_BIN(self->m_pipeline), "comp")) {
+                    GstElement *conv  = gst_element_factory_make("videoconvert", nullptr);
+                    GstElement *scale = gst_element_factory_make("videoscale", nullptr);
+                    GstElement *cf    = gst_element_factory_make("capsfilter", nullptr);
+                    GstCaps *vcaps = gst_caps_from_string(
+                        "video/x-raw,width=640,height=480");
+                    g_object_set(cf, "caps", vcaps, nullptr);
+                    gst_caps_unref(vcaps);
+                    gst_bin_add_many(GST_BIN(self->m_pipeline), conv, scale, cf, nullptr);
+                    gst_element_link_many(conv, scale, cf, nullptr);
+                    GstPad *compPad = gst_element_request_pad_simple(comp, "sink_%u");
+                    g_object_set(compPad, "zorder", 0u, nullptr);
+                    GstPad *cfSrc = gst_element_get_static_pad(cf, "src");
+                    gst_pad_link(cfSrc, compPad);
+                    gst_object_unref(cfSrc);
+                    gst_object_unref(compPad);
+                    gst_element_sync_state_with_parent(conv);
+                    gst_element_sync_state_with_parent(scale);
+                    gst_element_sync_state_with_parent(cf);
+                    GstPad *sinkpad = gst_element_get_static_pad(conv, "sink");
+                    gst_pad_link(newpad, sinkpad);
+                    gst_object_unref(sinkpad);
+                    gst_object_unref(comp);
+                    gst_caps_unref(caps);
+                    return;
+                }
+                // No compositor (shouldn't happen for video calls) — direct sink.
                 sink = makeVideoSink();
                 if (sink && self->m_videoHandle) {
                     gst_video_overlay_set_window_handle(
