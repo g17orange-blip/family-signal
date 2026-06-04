@@ -70,5 +70,7 @@ private:
     QString     m_userId;
     QString     m_token;
     QTimer      m_reconnectTimer;
+    QTimer      m_pingTimer;        // liveness probe, see ctor
+    bool        m_awaitingPong = false;
     bool        m_helloSent = false;
 };

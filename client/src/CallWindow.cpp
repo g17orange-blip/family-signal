@@ -2,6 +2,7 @@
 
 #include <QCloseEvent>
 #include <QHBoxLayout>
+#include <QResizeEvent>
 #include <QLabel>
 #include <QPushButton>
 #include <QVBoxLayout>
@@ -21,6 +22,18 @@ CallWindow::CallWindow(QWidget *parent) : QWidget(parent) {
     p.setColor(QPalette::Window, Qt::black);
     m_videoArea->setPalette(p);
     m_videoArea->setMinimumSize(320, 240);
+
+    // Own camera preview: a small native square pinned to the bottom-right
+    // corner of the video area (GStreamer paints into it directly).
+    m_selfView = new QWidget(m_videoArea);
+    m_selfView->setObjectName(QStringLiteral("selfView"));
+    m_selfView->setAttribute(Qt::WA_NativeWindow, true);
+    m_selfView->setAutoFillBackground(true);
+    QPalette sp = m_selfView->palette();
+    sp.setColor(QPalette::Window, QColor(0x10, 0x14, 0x18));
+    m_selfView->setPalette(sp);
+    m_selfView->setFixedSize(176, 132);
+    m_selfView->hide();
 
     m_status = new QLabel(tr("Соединение..."), this);
     m_status->setAlignment(Qt::AlignCenter);
@@ -62,6 +75,29 @@ CallWindow::CallWindow(QWidget *parent) : QWidget(parent) {
 
 quintptr CallWindow::videoHandle() const {
     return static_cast<quintptr>(m_videoArea->winId());
+}
+
+quintptr CallWindow::selfViewHandle() const {
+    return static_cast<quintptr>(m_selfView->winId());
+}
+
+void CallWindow::setSelfViewVisible(bool visible) {
+    m_selfView->setVisible(visible);
+    if (visible) {
+        repositionSelfView();
+        m_selfView->raise();
+    }
+}
+
+void CallWindow::repositionSelfView() {
+    const int margin = 12;
+    m_selfView->move(m_videoArea->width() - m_selfView->width() - margin,
+                     m_videoArea->height() - m_selfView->height() - margin);
+}
+
+void CallWindow::resizeEvent(QResizeEvent *event) {
+    QWidget::resizeEvent(event);
+    repositionSelfView();
 }
 
 void CallWindow::setPeerName(const QString &name) {

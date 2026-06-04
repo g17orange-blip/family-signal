@@ -16,6 +16,9 @@ public:
 
     // Native window handle of the video area. Pass to WebRtcSession.
     quintptr videoHandle() const;
+    // Small bottom-right self-view square (own camera preview).
+    quintptr selfViewHandle() const;
+    void setSelfViewVisible(bool visible);
 
     void setPeerName(const QString &name);
     void setStatus(const QString &status);
@@ -31,9 +34,13 @@ signals:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
 
 private:
+    void repositionSelfView();
+
     QWidget     *m_videoArea;
+    QWidget     *m_selfView;
     QLabel      *m_status;
     QPushButton *m_acceptBtn;
     QPushButton *m_hangupBtn;

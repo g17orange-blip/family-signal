@@ -205,6 +205,7 @@ WebRtcSession::~WebRtcSession() {
 
 void WebRtcSession::setConfig(const Config &cfg) { m_config = cfg; }
 void WebRtcSession::setVideoWindowHandle(quintptr handle) { m_videoHandle = handle; }
+void WebRtcSession::setSelfViewHandle(quintptr handle) { m_selfViewHandle = handle; }
 
 void WebRtcSession::prepare(bool withVideo) {
     if (m_pipeline && m_withVideo != withVideo) stop();   // rebuild on mode change
@@ -299,6 +300,7 @@ void WebRtcSession::buildPipelineIfNeeded() {
     const QByteArray videoBranch = m_withVideo ?
         "autovideosrc ! videoconvert ! videoscale ! "
         "  video/x-raw,width=640,height=480 ! "
+        "  tee name=selftee ! "
         "  queue max-size-buffers=10 leaky=downstream ! "
         "  x264enc tune=zerolatency speed-preset=ultrafast bitrate=600 key-int-max=30 ! "
         "  video/x-h264,profile=constrained-baseline ! "
@@ -335,6 +337,25 @@ void WebRtcSession::buildPipelineIfNeeded() {
         return;
     }
     m_webrtc = gst_bin_get_by_name(GST_BIN(m_pipeline), "webrtc");
+
+    // Local camera preview ("self view"): a second branch off the capture
+    // tee into a small overlay square in the call window.
+    if (m_withVideo && m_selfViewHandle) {
+        if (GstElement *tee = gst_bin_get_by_name(GST_BIN(m_pipeline), "selftee")) {
+            GstElement *q    = gst_element_factory_make("queue", nullptr);
+            GstElement *conv = gst_element_factory_make("videoconvert", nullptr);
+            GstElement *sink = makeVideoSink();
+            if (q && conv && sink) {
+                g_object_set(q, "max-size-buffers", 2, "leaky", 2 /*downstream*/, nullptr);
+                gst_video_overlay_set_window_handle(
+                    GST_VIDEO_OVERLAY(sink), static_cast<guintptr>(m_selfViewHandle));
+                gst_bin_add_many(GST_BIN(m_pipeline), q, conv, sink, nullptr);
+                gst_element_link_many(tee, q, conv, sink, nullptr);
+            }
+            gst_object_unref(tee);
+        }
+    }
+
     attachWebrtcSignals();
 }
 

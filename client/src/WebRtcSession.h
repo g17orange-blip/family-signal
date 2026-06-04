@@ -43,6 +43,10 @@ public:
     // Pass the platform window handle of the QWidget that should display
     // the remote video. Must be called before remote video arrives.
     void setVideoWindowHandle(quintptr handle);
+    // Window handle for the local camera preview (0 = no self-view).
+    // Must be set before start() — the preview branch is built with the
+    // pipeline.
+    void setSelfViewHandle(quintptr handle);
 
     // Choose whether the next call carries camera video. Call before
     // start(); switching modes tears the previous pipeline down so the
@@ -133,6 +137,7 @@ private:
     bool   m_channelOpen = false;
     bool   m_haveAec = false;   // webrtcdsp echo cancellation in the pipeline
     quintptr m_videoHandle = 0;
+    quintptr m_selfViewHandle = 0;
 
     GstElement *m_pipeline = nullptr;
     GstElement *m_webrtc   = nullptr;

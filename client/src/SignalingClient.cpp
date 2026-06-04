@@ -16,6 +16,26 @@ SignalingClient::SignalingClient(QObject *parent) : QObject(parent) {
 
     m_reconnectTimer.setSingleShot(true);
     connect(&m_reconnectTimer, &QTimer::timeout, this, &SignalingClient::tryReconnect);
+
+    // Liveness probe: ping the server every 30 s; a connection that stops
+    // answering gets aborted, which kicks the normal reconnect path. Heals
+    // "zombie" sockets after sleep/wake or silent network drops — the
+    // symptom was peers not seeing each other until an app restart.
+    m_pingTimer.setInterval(30000);
+    connect(&m_pingTimer, &QTimer::timeout, this, [this] {
+        if (m_socket->state() != QAbstractSocket::ConnectedState) return;
+        m_awaitingPong = true;
+        m_socket->ping();
+        QTimer::singleShot(10000, this, [this] {
+            if (m_awaitingPong) {
+                qWarning() << "[signaling] ping timeout — forcing reconnect";
+                m_socket->abort();
+                onDisconnected();
+            }
+        });
+    });
+    connect(m_socket, &QWebSocket::pong, this,
+            [this](quint64, const QByteArray &) { m_awaitingPong = false; });
 }
 
 SignalingClient::~SignalingClient() = default;
@@ -43,20 +63,30 @@ void SignalingClient::onConnected() {
     sendEnvelope(QStringLiteral("hello"), QString(),
                  QJsonDocument(payload).toJson(QJsonDocument::Compact));
     m_helloSent = true;
+    m_awaitingPong = false;
+    m_pingTimer.start();
     emit connected();
 }
 
 void SignalingClient::onDisconnected() {
     m_helloSent = false;
+    m_pingTimer.stop();
+    m_awaitingPong = false;
     emit disconnected();
     // Reconnect with backoff; the messenger should keep trying as long as
     // the user is logged in. Five seconds is conservative for human-scale
     // outages and won't hammer the server during a real outage.
-    if (m_url.isValid()) m_reconnectTimer.start(5000);
+    if (m_url.isValid() && !m_reconnectTimer.isActive()) m_reconnectTimer.start(5000);
 }
 
 void SignalingClient::onError() {
     emit errorOccurred(m_socket->errorString());
+    // A FAILED connection attempt emits errorOccurred but not disconnected —
+    // without rescheduling here one bad attempt would stop reconnecting
+    // forever (peers then never see each other until an app restart).
+    if (m_url.isValid() && m_socket->state() == QAbstractSocket::UnconnectedState &&
+        !m_reconnectTimer.isActive())
+        m_reconnectTimer.start(5000);
 }
 
 void SignalingClient::tryReconnect() {
