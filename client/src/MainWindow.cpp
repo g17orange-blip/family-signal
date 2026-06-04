@@ -436,25 +436,41 @@ void MainWindow::syncChatSessions(const QStringList &onlinePeers) {
 
 // --- Call lifecycle ------------------------------------------------------
 
-void MainWindow::onStartVideoCall() { onStartAudioCall(); /* same path for now */ }
+CallWindow *MainWindow::ensureCallWindow() {
+    if (!m_callWindow) {
+        m_callWindow = new CallWindow();
+        connect(m_callWindow, &CallWindow::acceptRequested,
+                this, &MainWindow::onAcceptIncomingCall);
+        connect(m_callWindow, &CallWindow::hangupRequested,
+                this, &MainWindow::onHangupRequested);
+    }
+    return m_callWindow;
+}
 
-void MainWindow::onStartAudioCall() {
+void MainWindow::onStartVideoCall() { startOutgoingCall(/*withVideo=*/true); }
+void MainWindow::onStartAudioCall() { startOutgoingCall(/*withVideo=*/false); }
+
+void MainWindow::startOutgoingCall(bool withVideo) {
     if (m_currentContact.id.isEmpty() || !m_currentContact.online) return;
     if (!m_webrtc) {
         // Demo mode (startDemo) never creates the media/signaling stack.
         statusBar()->showMessage(tr("Демо-режим — звонки недоступны"), 4000);
         return;
     }
-    if (!m_callWindow) {
-        m_callWindow = new CallWindow();
-        connect(m_callWindow, &CallWindow::hangupRequested,
-                this, &MainWindow::onHangupRequested);
+    m_outgoingVideo = withVideo;
+    CallWindow *w = ensureCallWindow();
+    w->setPeerName(m_currentContact.displayName);
+    w->showActive();
+    w->setStatus(withVideo ? tr("Видеозвоним… ждём ответа")
+                           : tr("Звоним… ждём ответа"));
+    w->show();
+    m_webrtc->prepare(withVideo);
+    m_webrtc->setVideoWindowHandle(w->videoHandle());
+    if (!m_webrtc->start()) {
+        statusBar()->showMessage(tr("Не удалось запустить камеру/микрофон"), 5000);
+        w->hide();
+        return;
     }
-    m_callWindow->setPeerName(m_currentContact.displayName);
-    m_callWindow->setStatus(tr("Звоним..."));
-    m_callWindow->show();
-    m_webrtc->setVideoWindowHandle(m_callWindow->videoHandle());
-    m_webrtc->start();
     m_webrtc->startCall(m_currentContact.id);
 }
 
@@ -465,18 +481,29 @@ void MainWindow::onIncomingOffer(const QString &fromPeerId, const QString &sdp,
         ensureChatSession(fromPeerId)->acceptOffer(fromPeerId, sdp);
         return;
     }
+    // A call: do NOT start the camera/microphone yet. Park the offer and
+    // let the user decide with the green "Принять" button.
     selectContactById(fromPeerId);
-    if (!m_callWindow) {
-        m_callWindow = new CallWindow();
-        connect(m_callWindow, &CallWindow::hangupRequested,
-                this, &MainWindow::onHangupRequested);
+    m_pendingOffer = {fromPeerId, sdp, kind != QLatin1String("call-audio")};
+    ensureCallWindow()->showIncoming(m_currentContact.displayName,
+                                     m_pendingOffer.video);
+}
+
+void MainWindow::onAcceptIncomingCall() {
+    if (m_pendingOffer.peerId.isEmpty() || !m_webrtc) return;
+    const PendingOffer offer = m_pendingOffer;
+    m_pendingOffer = {};
+    CallWindow *w = ensureCallWindow();
+    w->showActive();
+    w->setStatus(tr("Соединяем…"));
+    m_webrtc->prepare(offer.video);
+    m_webrtc->setVideoWindowHandle(w->videoHandle());
+    if (!m_webrtc->start()) {
+        statusBar()->showMessage(tr("Не удалось запустить камеру/микрофон"), 5000);
+        w->hide();
+        return;
     }
-    m_callWindow->setPeerName(m_currentContact.displayName);
-    m_callWindow->setStatus(tr("Входящий звонок..."));
-    m_callWindow->show();
-    m_webrtc->setVideoWindowHandle(m_callWindow->videoHandle());
-    m_webrtc->start();
-    m_webrtc->acceptOffer(fromPeerId, sdp);
+    m_webrtc->acceptOffer(offer.peerId, offer.sdp);
 }
 
 void MainWindow::onIncomingAnswer(const QString &fromPeerId, const QString &sdp,
@@ -503,13 +530,18 @@ void MainWindow::onIncomingIce(const QString &fromPeerId, const QString &candida
 }
 
 void MainWindow::onIncomingBye(const QString &fromPeerId) {
-    Q_UNUSED(fromPeerId);
+    // Caller hung up while we were still deciding — drop the pending offer.
+    if (m_pendingOffer.peerId == fromPeerId) m_pendingOffer = {};
     m_webrtc->hangup();
     if (m_callWindow) m_callWindow->hide();
 }
 
 void MainWindow::onLocalOffer(const QString &peerId, const QString &sdp) {
-    m_signaling->sendOffer(peerId, sdp);
+    // kind tells the callee whether to ask for the camera ("call") or run
+    // voice-only ("call-audio") — and what to show on the accept screen.
+    m_signaling->sendOffer(peerId, sdp,
+                           m_outgoingVideo ? QStringLiteral("call")
+                                           : QStringLiteral("call-audio"));
 }
 void MainWindow::onLocalAnswer(const QString &peerId, const QString &sdp) {
     m_signaling->sendAnswer(peerId, sdp);
@@ -532,6 +564,13 @@ void MainWindow::onWebRtcError(const QString &message) {
 }
 
 void MainWindow::onHangupRequested() {
+    if (!m_pendingOffer.peerId.isEmpty()) {
+        // Declining an incoming call we never accepted — media never started.
+        m_signaling->sendBye(m_pendingOffer.peerId);
+        m_pendingOffer = {};
+        if (m_callWindow) m_callWindow->hide();
+        return;
+    }
     if (!m_currentContact.id.isEmpty()) m_signaling->sendBye(m_currentContact.id);
     m_webrtc->hangup();
     if (m_callWindow) m_callWindow->hide();

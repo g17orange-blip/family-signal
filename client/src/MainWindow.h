@@ -69,6 +69,7 @@ private slots:
 
     void onStartVideoCall();
     void onStartAudioCall();
+    void onAcceptIncomingCall();
     void onHangupRequested();
 
     void onOpenSettings();
@@ -92,6 +93,18 @@ private:
     // Mark the on-screen conversation as read and push receipts to the peer.
     void sendReadReceipts(const QString &peerId, bool markConversation);
     void onPeerReadMessages(const QStringList &msgIds);
+
+    void startOutgoingCall(bool withVideo);
+    CallWindow *ensureCallWindow();
+
+    // Incoming call waiting for the user to press "Принять" — media is NOT
+    // running yet. Cleared on accept/decline/bye.
+    struct PendingOffer {
+        QString peerId;
+        QString sdp;
+        bool    video = true;
+    } m_pendingOffer;
+    bool m_outgoingVideo = true;   // kind for offers created by m_webrtc
 
     Config           m_config;
     SignalingClient *m_signaling   = nullptr;

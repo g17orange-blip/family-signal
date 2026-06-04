@@ -44,6 +44,11 @@ public:
     // the remote video. Must be called before remote video arrives.
     void setVideoWindowHandle(quintptr handle);
 
+    // Choose whether the next call carries camera video. Call before
+    // start(); switching modes tears the previous pipeline down so the
+    // camera is never opened for an audio-only call.
+    void prepare(bool withVideo);
+
     bool start();   // builds the pipeline, returns false on construction failure
     void stop();
 
@@ -119,6 +124,7 @@ private:
 
     Config m_config;
     Mode   m_mode = Mode::Call;
+    bool   m_withVideo = true;  // Call mode: include the camera branch
     bool   m_channelOpen = false;
     bool   m_haveAec = false;   // webrtcdsp echo cancellation in the pipeline
     quintptr m_videoHandle = 0;

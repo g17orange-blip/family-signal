@@ -107,6 +107,11 @@ WebRtcSession::~WebRtcSession() {
 void WebRtcSession::setConfig(const Config &cfg) { m_config = cfg; }
 void WebRtcSession::setVideoWindowHandle(quintptr handle) { m_videoHandle = handle; }
 
+void WebRtcSession::prepare(bool withVideo) {
+    if (m_pipeline && m_withVideo != withVideo) stop();   // rebuild on mode change
+    m_withVideo = withVideo;
+}
+
 bool WebRtcSession::start() {
     buildPipelineIfNeeded();
     if (!m_pipeline) return false;
@@ -184,14 +189,17 @@ void WebRtcSession::buildPipelineIfNeeded() {
     const QByteArray core =
         "webrtcbin name=webrtc bundle-policy=max-bundle "
         "  stun-server=" + m_config.stunUrl.toUtf8() + " ";
-    const QByteArray launch = core +
+    // Audio-only calls skip the whole camera branch — the camera LED never
+    // lights up and the SDP carries no video m-line.
+    const QByteArray videoBranch = m_withVideo ?
         "autovideosrc ! videoconvert ! videoscale ! "
         "  video/x-raw,width=640,height=480,framerate=30/1 ! "
         "  queue max-size-buffers=10 leaky=downstream ! "
         "  x264enc tune=zerolatency speed-preset=ultrafast bitrate=600 key-int-max=30 ! "
         "  video/x-h264,profile=constrained-baseline ! "
         "  rtph264pay config-interval=1 pt=96 ! "
-        "  application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtc. "
+        "  application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtc. " : "";
+    const QByteArray launch = core + videoBranch +
         "autoaudiosrc ! audioconvert ! audioresample ! " + aec +
         "  queue max-size-buffers=10 leaky=downstream ! "
         "  opusenc bitrate=32000 ! rtpopuspay pt=111 ! "
