@@ -23,4 +23,5 @@ protected:
 
 private:
     MessageBubbleDelegate *m_delegate;
+    int m_lastScroll = 0;   // previous scrollbar value, for direction detection
 };

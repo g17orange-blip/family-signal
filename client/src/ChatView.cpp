@@ -3,6 +3,7 @@
 #include "MessageBubbleDelegate.h"
 
 #include <QScrollBar>
+#include <QTimer>
 
 ChatView::ChatView(QWidget *parent) : QListView(parent) {
     m_delegate = new MessageBubbleDelegate(this);
@@ -30,8 +31,21 @@ void ChatView::setChatModel(ChatModel *model) {
         }, Qt::QueuedConnection);
     });
     connect(verticalScrollBar(), &QScrollBar::valueChanged, this, [this](int v) {
-        if (v <= 40 && verticalScrollBar()->maximum() > 0)
+        // Only when actually scrolling upwards: programmatic jumps (the
+        // open-dialog snap passes through 0) must not page history in.
+        const bool movingUp = v < m_lastScroll;
+        m_lastScroll = v;
+        if (movingUp && v <= 40 && verticalScrollBar()->maximum() > 0)
             emit needOlderMessages();
+    });
+    // Opening a conversation is a model RESET (no rowsInserted) — jump to
+    // the newest message. Twice: once after the event loop lays the rows
+    // out, and again a tick later when the delegate's width-dependent
+    // size hints have settled.
+    connect(model, &QAbstractItemModel::modelReset, this, [this]() {
+        QMetaObject::invokeMethod(this, &ChatView::scrollToBottom,
+                                  Qt::QueuedConnection);
+        QTimer::singleShot(50, this, &ChatView::scrollToBottom);
     });
 }
 
