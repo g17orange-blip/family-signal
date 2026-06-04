@@ -21,11 +21,17 @@ QSplitter::handle {
     width: 1px;
 }
 
+/* Conversation: message bubbles render with this view's font. */
+ChatView {
+    font-size: 16px;
+}
+
 /* Contacts list */
 QListView#contactsView {
     background: #181C20;
     border: none;
     padding: 6px 0;
+    font-weight: 600;
 }
 QListView#contactsView::item {
     padding: 12px 16px;
@@ -53,6 +59,7 @@ QLabel#chatHeaderName {
 QLabel#chatHeaderStatus {
     color: #8E969E;
     font-size: 12px;
+    font-weight: 600;
 }
 
 /* Tool buttons in the header */

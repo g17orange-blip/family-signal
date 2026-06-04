@@ -220,7 +220,7 @@ client's `user_id` matches the other's `peers[].id`.
 
 ---
 
-## Status — v0.1.0
+## Status — v0.2.0
 
 Tested end-to-end (macOS ↔ Windows) against a live server:
 
@@ -229,8 +229,11 @@ Tested end-to-end (macOS ↔ Windows) against a live server:
   at rest, paginated conversations.
 - ✅ Voice and video calls with accept/decline, self-view, echo
   cancellation (Windows/Linux), busy handling, call log pills in the chat.
+- ✅ Unstable-network resilience: Opus inband FEC + video NACK/RTX,
+  lip-sync (RTCP latency handling), "connection lost" status with
+  automatic redial and silent re-accept after a dropped call.
 - ✅ One-command server install, invite-code onboarding, prebuilt
   installers for Windows/macOS/Linux.
 
-Planned next (v0.2.0): photo/video sending over the same encrypted
+Planned next (v0.3.0): photo/video sending over the same encrypted
 DataChannel; macOS echo cancellation; remote peer public-key pinning.
