@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(signal-client LANGUAGES CXX)
+project(signal-client LANGUAGES C CXX)   # C for the vendored monocypher
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -48,9 +48,13 @@ set(SOURCES
     src/Contact.h
     src/ContactsModel.cpp
     src/ContactsModel.h
+    src/HistoryCipher.cpp
+    src/HistoryCipher.h
     src/Message.h
     src/MessageHistory.cpp
     src/MessageHistory.h
+    third_party/monocypher/monocypher.c
+    third_party/monocypher/monocypher.h
     src/ChatModel.cpp
     src/ChatModel.h
     src/MessageBubbleDelegate.cpp
@@ -85,6 +89,7 @@ target_link_libraries(signal-client PRIVATE
 
 if(WIN32)
     set_target_properties(signal-client PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_libraries(signal-client PRIVATE crypt32)   # DPAPI for HistoryCipher
 endif()
 if(APPLE)
     set_target_properties(signal-client PROPERTIES MACOSX_BUNDLE TRUE)

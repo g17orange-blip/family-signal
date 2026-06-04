@@ -1,9 +1,11 @@
 #pragma once
 
+#include "HistoryCipher.h"
 #include "Message.h"
 
 #include <QObject>
 #include <QString>
+#include <QVariant>
 #include <QVector>
 #include <QtSql/QSqlDatabase>
 
@@ -11,7 +13,9 @@
 // sees these rows — messages travel over the WebRTC DataChannel directly
 // between peers, and each peer keeps its own copy of the conversation.
 //
-// Stored at QStandardPaths::AppDataLocation/history.db.
+// Stored at QStandardPaths::AppDataLocation/history.db. Message text is
+// encrypted at rest (see HistoryCipher); pre-encryption databases are
+// migrated transparently on open().
 class MessageHistory : public QObject {
     Q_OBJECT
 public:
@@ -31,6 +35,11 @@ public:
     QVector<Message> loadConversation(const QString &peerId, int limit = 500) const;
 
 private:
-    QSqlDatabase m_db;
-    QString      m_error;
+    // One-time plaintext→encrypted rewrite, tracked via PRAGMA user_version.
+    bool migrateToEncrypted();
+    QString decryptText(const QVariant &stored) const;
+
+    QSqlDatabase  m_db;
+    QString       m_error;
+    HistoryCipher m_cipher;
 };
