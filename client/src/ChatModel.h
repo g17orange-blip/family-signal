@@ -19,6 +19,7 @@ public:
         SentAtRole,
         OutgoingRole,
         DeliveredRole,
+        ReadRole,
     };
 
     explicit ChatModel(QObject *parent = nullptr);

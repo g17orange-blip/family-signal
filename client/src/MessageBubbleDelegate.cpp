@@ -28,9 +28,8 @@ MessageBubbleDelegate::computeLayout(const QStyleOptionViewItem &option,
     const QString text = index.data(ChatModel::TextRole).toString();
     const bool outgoing = index.data(ChatModel::OutgoingRole).toBool();
     const QDateTime sentAt = index.data(ChatModel::SentAtRole).toDateTime();
-    const QString meta = sentAt.toString(QStringLiteral("HH:mm"))
-                       + (outgoing && index.data(ChatModel::DeliveredRole).toBool()
-                          ? QStringLiteral("  ✓") : QString());
+    QString meta = sentAt.toString(QStringLiteral("HH:mm"));
+    if (outgoing) meta += QStringLiteral("      ");   // room for painted ticks
 
     const int rowW = option.rect.width();
     const int maxBubbleW = int(rowW * kMaxBubbleFrac);
@@ -99,11 +98,45 @@ void MessageBubbleDelegate::paint(QPainter *painter,
     metaFont.setPointSizeF(metaFont.pointSizeF() * 0.85);
     painter->setFont(metaFont);
     painter->setPen(metaColor);
-    QString meta = sentAt.toString(QStringLiteral("HH:mm"));
-    if (outgoing) meta += delivered ? QStringLiteral("  ✓✓") : QStringLiteral("  ✓");
-    painter->drawText(L.meta,
-                      outgoing ? Qt::AlignRight : Qt::AlignLeft,
-                      meta);
+    const QString meta = sentAt.toString(QStringLiteral("HH:mm"));
+    if (!outgoing) {
+        painter->drawText(L.meta, Qt::AlignLeft, meta);
+        painter->restore();
+        return;
+    }
+
+    // Outgoing: time, then Telegram-style overlapping ticks.
+    //   one grey tick   — sent, not yet delivered
+    //   two grey ticks  — delivered to the peer's device
+    //   two green ticks — the peer opened the conversation (read receipt)
+    const bool read = index.data(ChatModel::ReadRole).toBool();
+    const int tickAreaW = 22;
+    QRect timeRect = L.meta.adjusted(0, 0, -tickAreaW, 0);
+    painter->drawText(timeRect, Qt::AlignRight, meta);
+
+    const QColor tickColor = read ? QColor(0x8A, 0xFF, 0xB0)   // bright mint
+                                  : metaColor;                  // grey
+    QPen tickPen(tickColor, 1.6);
+    tickPen.setCapStyle(Qt::RoundCap);
+    tickPen.setJoinStyle(Qt::RoundJoin);
+    painter->setPen(tickPen);
+
+    auto drawTick = [painter](const QPointF &origin) {
+        // A small check mark: down-stroke then the long up-stroke.
+        QPainterPath p(origin + QPointF(0.0, 4.5));
+        p.lineTo(origin + QPointF(3.0, 7.5));
+        p.lineTo(origin + QPointF(9.0, 0.5));
+        painter->drawPath(p);
+    };
+    const qreal ticksRight = L.meta.right() - 2;
+    const qreal tickY = L.meta.center().y() - 4.5;
+    if (delivered || read) {
+        // Two overlapping ticks, second shifted right like Telegram's.
+        drawTick(QPointF(ticksRight - 15, tickY));
+        drawTick(QPointF(ticksRight - 9,  tickY));
+    } else {
+        drawTick(QPointF(ticksRight - 9, tickY));
+    }
     painter->restore();
 }
 

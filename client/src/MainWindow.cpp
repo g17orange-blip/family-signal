@@ -124,22 +124,25 @@ void MainWindow::startDemo() {
     m_inputBar->setEnabled(true);
     m_contactsView->setCurrentIndex(m_contactsModel->index(0));
 
-    auto mk = [&](const QString &sender, const QString &text, int minutesAgo, bool delivered) {
+    auto mk = [&](const QString &sender, const QString &text, int minutesAgo,
+                  bool delivered, bool read = false) {
         Message m;
         m.peerId    = QStringLiteral("grandpa");
         m.senderId  = sender;
         m.text      = text;
         m.sentAt    = QDateTime::currentDateTime().addSecs(-60 * minutesAgo);
         m.delivered = delivered;
+        m.read      = read;
         return m;
     };
     QVector<Message> demo = {
-        mk(QStringLiteral("grandpa"), QStringLiteral("Здравствуй, внучок!"),                       45, true),
-        mk(QStringLiteral("you"),     QStringLiteral("Привет, дедушка! Как ты?"),                 44, true),
-        mk(QStringLiteral("grandpa"), QStringLiteral("Хорошо. Бабушка испекла пирог."),           42, true),
-        mk(QStringLiteral("you"),     QStringLiteral("Вкуснотища! С чем?"),                       41, true),
-        mk(QStringLiteral("grandpa"), QStringLiteral("С яблоками из сада. Приедешь — попробуешь."), 40, true),
-        mk(QStringLiteral("you"),     QStringLiteral("Обязательно! На выходных созвонимся?"),     2,  false),
+        mk(QStringLiteral("grandpa"), QStringLiteral("Здравствуй, внучок!"),                       45, true,  true),
+        mk(QStringLiteral("you"),     QStringLiteral("Привет, дедушка! Как ты?"),                 44, true,  true),
+        mk(QStringLiteral("grandpa"), QStringLiteral("Хорошо. Бабушка испекла пирог."),           42, true,  true),
+        mk(QStringLiteral("you"),     QStringLiteral("Вкуснотища! С чем?"),                       41, true,  true),
+        mk(QStringLiteral("grandpa"), QStringLiteral("С яблоками из сада. Приедешь — попробуешь."), 40, true, true),
+        mk(QStringLiteral("you"),     QStringLiteral("Обязательно! На выходных созвонимся?"),     5,  true),
+        mk(QStringLiteral("you"),     QStringLiteral("Я пока в дороге, наберу как доеду"),        2,  false),
     };
     m_chatModel->setMessages(demo);
 
@@ -192,10 +195,14 @@ void MainWindow::start() {
             this, &MainWindow::onTextReceived);
     connect(m_webrtc, &WebRtcSession::textDelivered,
             this, &MainWindow::onTextDelivered);
+    connect(m_webrtc, &WebRtcSession::peerReadMessages,
+            this, &MainWindow::onPeerReadMessages);
     connect(m_webrtc, &WebRtcSession::channelOpen, this, [this] {
-        // A call's DataChannel also delivers queued text.
-        if (!m_webrtc->remotePeerId().isEmpty())
+        // A call's DataChannel also delivers queued text and receipts.
+        if (!m_webrtc->remotePeerId().isEmpty()) {
             flushQueuedMessages(m_webrtc->remotePeerId());
+            sendReadReceipts(m_webrtc->remotePeerId(), /*markConversation=*/false);
+        }
     });
 
     m_signaling = new SignalingClient(this);
@@ -258,6 +265,7 @@ void MainWindow::onContactSelected(const QModelIndex &index) {
     if (m_history) {
         m_chatModel->setMessages(m_history->loadConversation(c.id));
     }
+    sendReadReceipts(c.id, /*markConversation=*/true);
 }
 
 Contact MainWindow::currentContact() const { return m_currentContact; }
@@ -295,16 +303,38 @@ void MainWindow::onSendText(const QString &text) {
     }
 }
 
+WebRtcSession *MainWindow::openChannelTo(const QString &peerId) const {
+    // Prefer the silent chat session; fall back to an active call's channel.
+    if (WebRtcSession *s = m_chatSessions.value(peerId))
+        if (s->isChannelOpen()) return s;
+    if (m_webrtc && m_webrtc->remotePeerId() == peerId && m_webrtc->isChannelOpen())
+        return m_webrtc;
+    return nullptr;
+}
+
 bool MainWindow::sendViaAnyChannel(const QString &peerId, const QString &msgId,
                                    const QString &text) {
-    // Prefer the silent chat session; fall back to an active call's channel.
-    if (WebRtcSession *s = m_chatSessions.value(peerId)) {
-        if (s->isChannelOpen() && s->sendText(msgId, text)) return true;
+    WebRtcSession *s = openChannelTo(peerId);
+    return s && s->sendText(msgId, text);
+}
+
+void MainWindow::sendReadReceipts(const QString &peerId, bool markConversation) {
+    if (!m_history || peerId.isEmpty()) return;
+    const QStringList ids = markConversation
+        ? m_history->markConversationRead(peerId, m_config.userId)
+        : m_history->pendingReceipts(peerId, m_config.userId);
+    if (ids.isEmpty()) return;
+    if (WebRtcSession *s = openChannelTo(peerId)) {
+        if (s->sendReadReceipts(ids)) m_history->markReceiptsSent(ids);
     }
-    if (m_webrtc && m_webrtc->remotePeerId() == peerId &&
-        m_webrtc->isChannelOpen() && m_webrtc->sendText(msgId, text))
-        return true;
-    return false;
+    // If no channel is open the receipts stay pending and go out on the
+    // next channelOpen for this peer.
+}
+
+void MainWindow::onPeerReadMessages(const QStringList &msgIds) {
+    if (!m_history || !m_history->markPeerRead(msgIds)) return;
+    if (!m_currentContact.id.isEmpty())
+        m_chatModel->setMessages(m_history->loadConversation(m_currentContact.id));
 }
 
 void MainWindow::flushQueuedMessages(const QString &peerId) {
@@ -323,9 +353,13 @@ void MainWindow::onTextReceived(const QString &fromPeerId, const QString &msgId,
     // duplicates are expected — drop them by msg_id.
     if (m_history && m_history->containsMsgId(msgId)) return;
     appendMessage(fromPeerId, fromPeerId, text, msgId);
-    // Red badge for conversations that aren't on screen right now.
-    if (m_currentContact.id != fromPeerId)
+    if (m_currentContact.id == fromPeerId) {
+        // On screen right now — the peer gets the read receipt immediately.
+        sendReadReceipts(fromPeerId, /*markConversation=*/true);
+    } else {
+        // Red badge for conversations that aren't on screen.
         m_contactsModel->incrementUnread(fromPeerId);
+    }
 }
 
 void MainWindow::onTextDelivered(const QString &msgId) {
@@ -358,9 +392,12 @@ WebRtcSession *MainWindow::ensureChatSession(const QString &peerId) {
             });
     connect(s, &WebRtcSession::textReceived,  this, &MainWindow::onTextReceived);
     connect(s, &WebRtcSession::textDelivered, this, &MainWindow::onTextDelivered);
+    connect(s, &WebRtcSession::peerReadMessages,
+            this, &MainWindow::onPeerReadMessages);
     connect(s, &WebRtcSession::channelOpen, this, [this, peerId] {
         qInfo() << "[chat] channel OPEN to" << peerId;
         flushQueuedMessages(peerId);
+        sendReadReceipts(peerId, /*markConversation=*/false);   // backlog receipts
     });
     connect(s, &WebRtcSession::error, this, [peerId](const QString &e) {
         qWarning() << "[chat] session error" << peerId << ":" << e;

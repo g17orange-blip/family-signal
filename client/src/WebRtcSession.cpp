@@ -25,6 +25,7 @@
 #include <QDebug>
 #include <QDir>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPointer>
@@ -165,6 +166,21 @@ void WebRtcSession::buildPipelineIfNeeded() {
         return;
     }
 
+    // Echo cancellation: webrtcdsp (paired with webrtcechoprobe on the
+    // playback side, see onIncomingStream) kills the speaker→mic feedback
+    // loop that otherwise builds up on laptops without headphones. The
+    // element ships with the official Windows/Ubuntu GStreamer builds but
+    // not with Homebrew's — degrade gracefully where it's missing.
+    QByteArray aec;
+    if (GstElementFactory *f = gst_element_factory_find("webrtcdsp")) {
+        gst_object_unref(f);
+        // webrtcdsp wants S16 mono at a fixed rate.
+        aec = "audio/x-raw,format=S16LE,rate=48000,channels=1 ! "
+              "webrtcdsp echo-cancel=true noise-suppression=true "
+              "  gain-control=true ! ";
+        m_haveAec = true;
+    }
+
     const QByteArray core =
         "webrtcbin name=webrtc bundle-policy=max-bundle "
         "  stun-server=" + m_config.stunUrl.toUtf8() + " ";
@@ -176,7 +192,7 @@ void WebRtcSession::buildPipelineIfNeeded() {
         "  video/x-h264,profile=constrained-baseline ! "
         "  rtph264pay config-interval=1 pt=96 ! "
         "  application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtc. "
-        "autoaudiosrc ! audioconvert ! audioresample ! "
+        "autoaudiosrc ! audioconvert ! audioresample ! " + aec +
         "  queue max-size-buffers=10 leaky=downstream ! "
         "  opusenc bitrate=32000 ! rtpopuspay pt=111 ! "
         "  application/x-rtp,media=audio,encoding-name=OPUS,payload=111 ! webrtc.";
@@ -313,6 +329,17 @@ bool WebRtcSession::sendText(const QString &msgId, const QString &text) {
     return true;
 }
 
+bool WebRtcSession::sendReadReceipts(const QStringList &msgIds) {
+    if (!m_dataChannel || !m_channelOpen || msgIds.isEmpty()) return false;
+    QJsonObject o;
+    o.insert(QStringLiteral("v"), 1);
+    o.insert(QStringLiteral("t"), QStringLiteral("read"));
+    o.insert(QStringLiteral("ids"), QJsonArray::fromStringList(msgIds));
+    const QByteArray raw = QJsonDocument(o).toJson(QJsonDocument::Compact);
+    g_signal_emit_by_name(m_dataChannel, "send-string", raw.constData());
+    return true;
+}
+
 void WebRtcSession::onChannelMessage(const QString &raw) {
     QJsonParseError err{};
     const auto doc = QJsonDocument::fromJson(raw.toUtf8(), &err);
@@ -337,6 +364,11 @@ void WebRtcSession::onChannelMessage(const QString &raw) {
         }
     } else if (type == QLatin1String("ack")) {
         emit textDelivered(id);
+    } else if (type == QLatin1String("read")) {
+        QStringList ids;
+        for (const auto v : o.value(QStringLiteral("ids")).toArray())
+            ids.append(v.toString());
+        if (!ids.isEmpty()) emit peerReadMessages(ids);
     }
 }
 
@@ -442,7 +474,30 @@ void WebRtcSession::onIncomingStream(void *padPtr) {
                         static_cast<guintptr>(self->m_videoHandle));
                 }
             } else if (g_str_has_prefix(name, "audio/")) {
-                sink = gst_element_factory_make("autoaudiosink", nullptr);
+                // Playback chain. When AEC is active the echo probe must see
+                // exactly what goes to the speakers so webrtcdsp can subtract
+                // it from the mic signal.
+                GstElement *conv = gst_element_factory_make("audioconvert", nullptr);
+                GstElement *res  = gst_element_factory_make("audioresample", nullptr);
+                GstElement *out  = gst_element_factory_make("autoaudiosink", nullptr);
+                GstElement *probe = self->m_haveAec
+                    ? gst_element_factory_make("webrtcechoprobe", nullptr) : nullptr;
+                if (!conv || !res || !out) return;
+                gst_bin_add_many(GST_BIN(self->m_pipeline), conv, res, out, nullptr);
+                if (probe) gst_bin_add(GST_BIN(self->m_pipeline), probe);
+                if (probe)
+                    gst_element_link_many(conv, res, probe, out, nullptr);
+                else
+                    gst_element_link_many(conv, res, out, nullptr);
+                gst_element_sync_state_with_parent(conv);
+                gst_element_sync_state_with_parent(res);
+                if (probe) gst_element_sync_state_with_parent(probe);
+                gst_element_sync_state_with_parent(out);
+                gst_caps_unref(caps);
+                GstPad *sinkpad = gst_element_get_static_pad(conv, "sink");
+                gst_pad_link(newpad, sinkpad);
+                gst_object_unref(sinkpad);
+                return;
             }
             gst_caps_unref(caps);
             if (!sink) return;

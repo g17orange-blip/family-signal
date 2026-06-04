@@ -60,6 +60,9 @@ public:
     // the message then stays queued in the history DB.
     bool sendText(const QString &msgId, const QString &text);
 
+    // Tell the peer these of their messages were displayed (read receipts).
+    bool sendReadReceipts(const QStringList &msgIds);
+
     bool isInCall() const { return m_inCall; }
     bool isChannelOpen() const { return m_channelOpen; }
     QString remotePeerId() const { return m_peerId; }
@@ -82,6 +85,8 @@ signals:
                       const QString &text);
     // The remote peer acknowledged receiving this message.
     void textDelivered(const QString &msgId);
+    // The remote peer displayed these (our outgoing) messages.
+    void peerReadMessages(const QStringList &msgIds);
     // DataChannel is open — queued messages can be flushed now.
     void channelOpen();
 
@@ -115,6 +120,7 @@ private:
     Config m_config;
     Mode   m_mode = Mode::Call;
     bool   m_channelOpen = false;
+    bool   m_haveAec = false;   // webrtcdsp echo cancellation in the pipeline
     quintptr m_videoHandle = 0;
 
     GstElement *m_pipeline = nullptr;

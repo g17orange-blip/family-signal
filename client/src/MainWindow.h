@@ -88,6 +88,10 @@ private:
     void flushQueuedMessages(const QString &peerId);
     bool sendViaAnyChannel(const QString &peerId, const QString &msgId,
                            const QString &text);
+    WebRtcSession *openChannelTo(const QString &peerId) const;
+    // Mark the on-screen conversation as read and push receipts to the peer.
+    void sendReadReceipts(const QString &peerId, bool markConversation);
+    void onPeerReadMessages(const QStringList &msgIds);
 
     Config           m_config;
     SignalingClient *m_signaling   = nullptr;

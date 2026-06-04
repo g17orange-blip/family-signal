@@ -5,6 +5,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QVariant>
 #include <QVector>
 #include <QtSql/QSqlDatabase>
@@ -32,6 +33,18 @@ public:
     bool markDelivered(qint64 rowId);
     bool markDeliveredByMsgId(const QString &msgId);
 
+    // --- Read receipts ------------------------------------------------------
+    // Receiver side: the conversation with `peerId` is on screen — flag its
+    // inbound messages as read and return every msg_id whose read receipt
+    // still has to reach the sender (including ones from earlier sessions).
+    QStringList markConversationRead(const QString &peerId, const QString &selfId);
+    // Receiver side: receipts for these ids were sent successfully.
+    bool markReceiptsSent(const QStringList &msgIds);
+    // Receiver side: receipts read earlier but never sent (peer was offline).
+    QStringList pendingReceipts(const QString &peerId, const QString &selfId) const;
+    // Sender side: the peer displayed these outgoing messages.
+    bool markPeerRead(const QStringList &msgIds);
+
     // Returns up to `limit` most recent messages for a conversation, oldest first.
     QVector<Message> loadConversation(const QString &peerId, int limit = 500) const;
 
@@ -51,6 +64,8 @@ private:
     bool migrateToEncrypted();
     // v2: add the msg_id column (delivery acks / dedup).
     bool migrateAddMsgId();
+    // v3: add read / read_sent columns (read receipts).
+    bool migrateAddRead();
     QString decryptText(const QVariant &stored) const;
 
     QSqlDatabase  m_db;

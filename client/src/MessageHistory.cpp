@@ -45,7 +45,30 @@ bool MessageHistory::open() {
     q.exec(QStringLiteral(
         "CREATE INDEX IF NOT EXISTS idx_messages_peer_time "
         "ON messages(peer_id, sent_at)"));
-    return migrateToEncrypted() && migrateAddMsgId();
+    return migrateToEncrypted() && migrateAddMsgId() && migrateAddRead();
+}
+
+// v3: read receipts. `read` — outgoing: peer displayed it / incoming: we
+// displayed it. `read_sent` (incoming only) — the receipt reached the peer;
+// kept separately so receipts survive the peer being offline at read time.
+bool MessageHistory::migrateAddRead() {
+    QSqlQuery v(m_db);
+    if (!v.exec(QStringLiteral("PRAGMA user_version")) || !v.next()) {
+        m_error = v.lastError().text();
+        return false;
+    }
+    if (v.value(0).toInt() >= 3) return true;
+
+    QSqlQuery q(m_db);
+    if (!q.exec(QStringLiteral(
+            "ALTER TABLE messages ADD COLUMN read INTEGER NOT NULL DEFAULT 0")) ||
+        !q.exec(QStringLiteral(
+            "ALTER TABLE messages ADD COLUMN read_sent INTEGER NOT NULL DEFAULT 0"))) {
+        m_error = q.lastError().text();
+        return false;
+    }
+    q.exec(QStringLiteral("PRAGMA user_version = 3"));
+    return true;
 }
 
 // v2: per-message UUID used to pair delivery acks and dedup re-sends.
@@ -159,6 +182,60 @@ bool MessageHistory::markDeliveredByMsgId(const QString &msgId) {
     return q.exec() && q.numRowsAffected() > 0;
 }
 
+namespace {
+// "?, ?, ?, ..." for binding a string list into an IN (...) clause.
+QString placeholders(int n) {
+    QStringList p;
+    p.reserve(n);
+    for (int i = 0; i < n; ++i) p.append(QStringLiteral("?"));
+    return p.join(QStringLiteral(", "));
+}
+} // namespace
+
+QStringList MessageHistory::markConversationRead(const QString &peerId,
+                                                 const QString &selfId) {
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral(
+        "UPDATE messages SET read = 1 "
+        "WHERE peer_id = ? AND sender_id != ? AND read = 0"));
+    q.addBindValue(peerId);
+    q.addBindValue(selfId);
+    q.exec();
+    return pendingReceipts(peerId, selfId);
+}
+
+QStringList MessageHistory::pendingReceipts(const QString &peerId,
+                                            const QString &selfId) const {
+    QStringList out;
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral(
+        "SELECT msg_id FROM messages "
+        "WHERE peer_id = ? AND sender_id != ? AND read = 1 AND read_sent = 0"));
+    q.addBindValue(peerId);
+    q.addBindValue(selfId);
+    if (q.exec())
+        while (q.next()) out.append(q.value(0).toString());
+    return out;
+}
+
+bool MessageHistory::markReceiptsSent(const QStringList &msgIds) {
+    if (msgIds.isEmpty()) return true;
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral("UPDATE messages SET read_sent = 1 WHERE msg_id IN (%1)")
+                  .arg(placeholders(msgIds.size())));
+    for (const QString &id : msgIds) q.addBindValue(id);
+    return q.exec();
+}
+
+bool MessageHistory::markPeerRead(const QStringList &msgIds) {
+    if (msgIds.isEmpty()) return true;
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral("UPDATE messages SET read = 1 WHERE msg_id IN (%1)")
+                  .arg(placeholders(msgIds.size())));
+    for (const QString &id : msgIds) q.addBindValue(id);
+    return q.exec() && q.numRowsAffected() > 0;
+}
+
 bool MessageHistory::containsMsgId(const QString &msgId) const {
     if (msgId.isEmpty()) return false;
     QSqlQuery q(m_db);
@@ -207,7 +284,7 @@ QVector<Message> MessageHistory::loadConversation(const QString &peerId, int lim
     QVector<Message> out;
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
-        "SELECT id, msg_id, peer_id, sender_id, text, sent_at, delivered "
+        "SELECT id, msg_id, peer_id, sender_id, text, sent_at, delivered, read "
         "FROM messages WHERE peer_id = ? "
         "ORDER BY sent_at DESC LIMIT ?"));
     q.addBindValue(peerId);
@@ -222,6 +299,7 @@ QVector<Message> MessageHistory::loadConversation(const QString &peerId, int lim
         m.text      = decryptText(q.value(4));
         m.sentAt    = QDateTime::fromMSecsSinceEpoch(q.value(5).toLongLong());
         m.delivered = q.value(6).toInt() != 0;
+        m.read      = q.value(7).toInt() != 0;
         out.prepend(m); // reverse so callers get oldest-first
     }
     return out;
