@@ -282,11 +282,21 @@ void WebRtcSession::buildPipelineIfNeeded() {
         "  video/x-h264,profile=constrained-baseline ! "
         "  rtph264pay config-interval=1 pt=96 ! "
         "  application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtc. " : "";
+    // With AEC the playback side must exist BEFORE webrtcdsp processes its
+    // first mic buffer ("No echo probe ... found" kills the pipeline
+    // otherwise). Build it statically: a silent live source keeps the mixer
+    // and sink prerolled; remote audio is mixed in when it arrives
+    // (see onIncomingStream).
+    const QByteArray aecPlayback = m_haveAec ?
+        "audiotestsrc wave=silence is-live=true ! "
+        "  audiomixer name=amix ! audioconvert ! audioresample ! "
+        "  webrtcechoprobe ! autoaudiosink " : "";
     const QByteArray launch = core + videoBranch +
         "autoaudiosrc ! audioconvert ! audioresample ! " + aec +
         "  queue max-size-buffers=10 leaky=downstream ! "
         "  opusenc bitrate=32000 ! rtpopuspay pt=111 ! "
-        "  application/x-rtp,media=audio,encoding-name=OPUS,payload=111 ! webrtc.";
+        "  application/x-rtp,media=audio,encoding-name=OPUS,payload=111 ! webrtc. " +
+        aecPlayback;
 
     GError *err = nullptr;
     m_pipeline = gst_parse_launch(launch.constData(), &err);
@@ -566,25 +576,34 @@ void WebRtcSession::onIncomingStream(void *padPtr) {
                         static_cast<guintptr>(self->m_videoHandle));
                 }
             } else if (g_str_has_prefix(name, "audio/")) {
-                // Playback chain. When AEC is active the echo probe must see
-                // exactly what goes to the speakers so webrtcdsp can subtract
-                // it from the mic signal.
                 GstElement *conv = gst_element_factory_make("audioconvert", nullptr);
                 GstElement *res  = gst_element_factory_make("audioresample", nullptr);
-                GstElement *out  = gst_element_factory_make("autoaudiosink", nullptr);
-                GstElement *probe = self->m_haveAec
-                    ? gst_element_factory_make("webrtcechoprobe", nullptr) : nullptr;
-                if (!conv || !res || !out) return;
-                gst_bin_add_many(GST_BIN(self->m_pipeline), conv, res, out, nullptr);
-                if (probe) gst_bin_add(GST_BIN(self->m_pipeline), probe);
-                if (probe)
-                    gst_element_link_many(conv, res, probe, out, nullptr);
-                else
-                    gst_element_link_many(conv, res, out, nullptr);
+                if (!conv || !res) return;
+                gst_bin_add_many(GST_BIN(self->m_pipeline), conv, res, nullptr);
+                gst_element_link(conv, res);
+
+                // With AEC the playback chain (mixer → echo probe → sink)
+                // already runs; feed the remote audio into the mixer so the
+                // probe sees exactly what reaches the speakers.
+                GstElement *amix = self->m_haveAec
+                    ? gst_bin_get_by_name(GST_BIN(self->m_pipeline), "amix")
+                    : nullptr;
+                if (amix) {
+                    GstPad *mixPad  = gst_element_request_pad_simple(amix, "sink_%u");
+                    GstPad *resSrc  = gst_element_get_static_pad(res, "src");
+                    gst_pad_link(resSrc, mixPad);
+                    gst_object_unref(resSrc);
+                    gst_object_unref(mixPad);
+                    gst_object_unref(amix);
+                } else {
+                    GstElement *out = gst_element_factory_make("autoaudiosink", nullptr);
+                    if (!out) return;
+                    gst_bin_add(GST_BIN(self->m_pipeline), out);
+                    gst_element_link(res, out);
+                    gst_element_sync_state_with_parent(out);
+                }
                 gst_element_sync_state_with_parent(conv);
                 gst_element_sync_state_with_parent(res);
-                if (probe) gst_element_sync_state_with_parent(probe);
-                gst_element_sync_state_with_parent(out);
                 gst_caps_unref(caps);
                 GstPad *sinkpad = gst_element_get_static_pad(conv, "sink");
                 gst_pad_link(newpad, sinkpad);
