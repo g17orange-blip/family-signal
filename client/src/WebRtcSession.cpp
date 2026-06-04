@@ -56,9 +56,19 @@ void pointGstAtBundledPlugins() {
         const QString path = QFileInfo(c).canonicalFilePath();
         if (!path.isEmpty() && QFileInfo(path).isDir()) {
             qputenv("GST_PLUGIN_SYSTEM_PATH_1_0", path.toUtf8());
-            const QString scanner = appDir.filePath(QStringLiteral("gst-plugin-scanner"));
-            if (QFileInfo::exists(scanner))
-                qputenv("GST_PLUGIN_SCANNER_1_0", scanner.toUtf8());
+            // Without the helper binary GStreamer scans plugins in-process
+            // ("Couldn't create helper process" + a slower first start, and
+            // a crashing plugin takes the app down with it). Both env names
+            // are checked: the POSIX loader reads the _1_0 variant first,
+            // the win32 loader the bare one.
+            for (const char *name : {"gst-plugin-scanner", "gst-plugin-scanner.exe"}) {
+                const QString scanner = appDir.filePath(QLatin1String(name));
+                if (QFileInfo::exists(scanner)) {
+                    qputenv("GST_PLUGIN_SCANNER_1_0", scanner.toUtf8());
+                    qputenv("GST_PLUGIN_SCANNER", scanner.toUtf8());
+                    break;
+                }
+            }
             break;
         }
     }
@@ -244,6 +254,8 @@ void WebRtcSession::stop() {
     }
     m_inCall = false;
     m_channelOpen = false;
+    m_offerCreated = false;
+    m_answerApplied = false;
 }
 
 void WebRtcSession::buildPipelineIfNeeded() {
@@ -462,6 +474,10 @@ void WebRtcSession::acceptOffer(const QString &peerId, const QString &remoteSdp)
 }
 
 void WebRtcSession::provideAnswer(const QString &remoteSdp) {
+    // Belt-and-braces against duplicate delivery: applying an answer in the
+    // stable state is an error inside webrtcbin, so drop repeats here.
+    if (m_answerApplied) return;
+    m_answerApplied = true;
     setRemoteDescription("answer", remoteSdp);
 }
 
@@ -562,6 +578,14 @@ void WebRtcSession::onNegotiationNeeded() {
     // Only the caller initiates the offer; the callee builds its answer
     // in response to set-remote-description.
     if (!m_isCaller) return;
+    // One offer per session. webrtcbin re-raises on-negotiation-needed for
+    // every transceiver/data-channel it picks up while going to PLAYING;
+    // without this guard we sent two offers, the peer answered both, and
+    // the second answer bounced off webrtcbin with "Not in the correct
+    // state (stable)". Renegotiation doesn't exist here — hangup() tears
+    // the pipeline down and the next call starts fresh.
+    if (m_offerCreated) return;
+    m_offerCreated = true;
     GstPromise *promise = gst_promise_new_with_change_func(
         +[](GstPromise *p, gpointer s) {
             static_cast<WebRtcSession *>(s)->onOfferCreated(p);
@@ -786,6 +810,15 @@ void WebRtcSession::pollBus() {
             }
             case GST_MESSAGE_EOS:
                 emit callEnded();
+                break;
+            case GST_MESSAGE_LATENCY:
+                // webrtcbin/rtpbin post this when ICE completes or an
+                // incoming branch appears. Without redistributing latency
+                // the RTP session never learns its running time and stops
+                // generating RTCP sender reports ("generated empty RTCP
+                // messages" in the logs) — audio/video still flow but
+                // lip-sync between them is never established.
+                gst_bin_recalculate_latency(GST_BIN(m_pipeline));
                 break;
             default: break;
         }

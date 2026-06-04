@@ -143,6 +143,8 @@ private:
     QString m_peerId;
     bool    m_inCall = false;
     bool    m_isCaller = false;
+    bool    m_offerCreated = false;   // one offer per session (see .cpp)
+    bool    m_answerApplied = false;  // ignore duplicate remote answers
 
     QTimer m_busTimer;
 };

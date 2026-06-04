@@ -39,6 +39,8 @@ Copy-Item (Join-Path $BuildDir "signal-client.exe") $dist
 Copy-Item "$GstRoot\bin\*.dll" $dist -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path (Join-Path $dist "gstreamer-1.0") | Out-Null
 Copy-Item "$GstRoot\lib\gstreamer-1.0\*.dll" (Join-Path $dist "gstreamer-1.0") -ErrorAction SilentlyContinue
+# Out-of-process plugin scanner — see the matching step in release.yml.
+Copy-Item "$GstRoot\libexec\gstreamer-1.0\gst-plugin-scanner.exe" $dist -ErrorAction SilentlyContinue
 
 Write-Host "==> Building installer"
 & $Inno "/DMyAppSrc=$((Resolve-Path $dist).Path)" client\packaging\signal.iss

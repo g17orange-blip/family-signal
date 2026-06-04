@@ -114,6 +114,10 @@ jobs:
           Copy-Item "$env:GSTREAMER_ROOT\bin\*.dll" $dist -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path "$dist\gstreamer-1.0" | Out-Null
           Copy-Item "$env:GSTREAMER_ROOT\lib\gstreamer-1.0\*.dll" "$dist\gstreamer-1.0" -ErrorAction SilentlyContinue
+          # The out-of-process plugin scanner: without it GStreamer scans
+          # in-process ("Couldn't create helper process" in the logs) and a
+          # crashing plugin would take the whole app down during the scan.
+          Copy-Item "$env:GSTREAMER_ROOT\libexec\gstreamer-1.0\gst-plugin-scanner.exe" $dist -ErrorAction SilentlyContinue
 
       - name: Build installer (Inno Setup)
         shell: pwsh
