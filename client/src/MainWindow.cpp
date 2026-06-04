@@ -578,6 +578,8 @@ void MainWindow::onAcceptIncomingCall() {
         w->hide();
         return;
     }
+    // A video conversation deserves the whole screen.
+    if (offer.video) w->showMaximized();
     m_webrtc->acceptOffer(offer.peerId, offer.sdp);
 }
 
@@ -652,7 +654,12 @@ void MainWindow::onLocalIce(const QString &peerId, const QString &candidate,
 }
 
 void MainWindow::onCallConnected() {
-    if (m_callWindow) m_callWindow->setStatus(tr("В разговоре"));
+    if (m_callWindow) {
+        m_callWindow->setStatus(tr("В разговоре"));
+        // Caller side mirror of the accept-side maximize.
+        if (m_activeCallVideo && !m_callWindow->isMaximized())
+            m_callWindow->showMaximized();
+    }
     if (!m_callConnectedAt.isValid()) m_callConnectedAt = QDateTime::currentDateTime();
 }
 
