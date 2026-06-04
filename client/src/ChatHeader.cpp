@@ -20,14 +20,23 @@ ChatHeader::ChatHeader(QWidget *parent) : QWidget(parent) {
     names->addWidget(m_name);
     names->addWidget(m_status);
 
+    // Text buttons, not bare icons: the grandfather shouldn't have to
+    // guess what a pictogram does.
     m_audioBtn = new QToolButton(this);
     m_videoBtn = new QToolButton(this);
-    m_audioBtn->setText(QStringLiteral("📞"));
-    m_videoBtn->setText(QStringLiteral("🎥"));
-    m_audioBtn->setToolTip(tr("Голосовой звонок"));
-    m_videoBtn->setToolTip(tr("Видеозвонок"));
-    m_audioBtn->setAutoRaise(true);
-    m_videoBtn->setAutoRaise(true);
+    m_audioBtn->setText(tr("📞 Позвонить"));
+    m_videoBtn->setText(tr("🎥 Видеозвонок"));
+    m_audioBtn->setToolTip(tr("Голосовой звонок — без камеры"));
+    m_videoBtn->setToolTip(tr("Звонок с видео"));
+    const QString btnStyle = QStringLiteral(
+        "QToolButton { background: rgba(24,149,136,0.25); color: #E6ECF0;"
+        "              border: 1px solid #189588; border-radius: 16px;"
+        "              padding: 7px 14px; font-weight: 600; }"
+        "QToolButton:hover:enabled { background: #189588; color: white; }"
+        "QToolButton:disabled { color: #586068; border-color: #3A444E;"
+        "                       background: transparent; }");
+    m_audioBtn->setStyleSheet(btnStyle);
+    m_videoBtn->setStyleSheet(btnStyle);
     m_audioBtn->setEnabled(false);
     m_videoBtn->setEnabled(false);
 

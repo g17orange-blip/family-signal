@@ -29,4 +29,11 @@ private:
     };
     Layout computeLayout(const QStyleOptionViewItem &option,
                          const QModelIndex &index) const;
+
+    // True when this row starts a new calendar day — it then gets a slim
+    // "dd-MM-yyyy ————" separator strip above the bubble.
+    bool startsNewDay(const QModelIndex &index) const;
+    int dateHeaderHeight(const QStyleOptionViewItem &option) const;
+    void paintDateHeader(QPainter *painter, const QStyleOptionViewItem &option,
+                         const QModelIndex &index) const;
 };

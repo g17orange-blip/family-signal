@@ -33,6 +33,43 @@ QFont scaledMetaFont(const QFont &base) {
 MessageBubbleDelegate::MessageBubbleDelegate(QObject *parent)
     : QStyledItemDelegate(parent) {}
 
+bool MessageBubbleDelegate::startsNewDay(const QModelIndex &index) const {
+    const QDate day = index.data(ChatModel::SentAtRole).toDateTime().date();
+    if (!day.isValid()) return false;
+    if (index.row() == 0) return true;
+    const QDate prev = index.sibling(index.row() - 1, 0)
+                           .data(ChatModel::SentAtRole).toDateTime().date();
+    return day != prev;
+}
+
+int MessageBubbleDelegate::dateHeaderHeight(const QStyleOptionViewItem &option) const {
+    return QFontMetrics(scaledMetaFont(option.font)).height() + 14;
+}
+
+void MessageBubbleDelegate::paintDateHeader(QPainter *painter,
+                                            const QStyleOptionViewItem &option,
+                                            const QModelIndex &index) const {
+    const QString text = index.data(ChatModel::SentAtRole).toDateTime()
+                             .toString(QStringLiteral("dd-MM-yyyy"));
+    const QFont f = scaledMetaFont(option.font);
+    const QFontMetrics fm(f);
+    const int h = dateHeaderHeight(option);
+    const QRect zone(option.rect.left() + kMargin, option.rect.top() + 4,
+                     option.rect.width() - 2 * kMargin, h - 8);
+
+    painter->save();
+    painter->setFont(f);
+    painter->setPen(QColor(0x6E, 0x7B, 0x86));
+    // Date sits at the side; a hairline runs across the rest of the row.
+    painter->drawText(zone, Qt::AlignLeft | Qt::AlignVCenter, text);
+    const int textW = fm.horizontalAdvance(text);
+    QPen line(QColor(0x3A, 0x44, 0x4E), 1);
+    painter->setPen(line);
+    const int y = zone.center().y();
+    painter->drawLine(zone.left() + textW + 10, y, zone.right(), y);
+    painter->restore();
+}
+
 MessageBubbleDelegate::Layout
 MessageBubbleDelegate::computeLayout(const QStyleOptionViewItem &option,
                                       const QModelIndex &index) const {
@@ -66,7 +103,8 @@ MessageBubbleDelegate::computeLayout(const QStyleOptionViewItem &option,
     } else {
         bubble.moveLeft(option.rect.left() + kMargin);
     }
-    bubble.moveTop(option.rect.top() + kMargin / 2);
+    bubble.moveTop(option.rect.top() + kMargin / 2
+                   + (startsNewDay(index) ? dateHeaderHeight(option) : 0));
 
     QRect textRect = bubble.adjusted(kBubblePaddingX, kBubblePaddingY,
                                       -kBubblePaddingX, -(kBubblePaddingY + metaFm.height() + kMetaSpacing));
@@ -81,6 +119,10 @@ void MessageBubbleDelegate::paint(QPainter *painter,
                                    const QModelIndex &index) const {
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing);
+
+    const bool newDay = startsNewDay(index);
+    if (newDay) paintDateHeader(painter, option, index);
+    const int headerH = newDay ? dateHeaderHeight(option) : 0;
 
     // Call-event system notes: a small centered pill, green for completed
     // calls, red for declined/missed — like Telegram's call log lines.
@@ -97,7 +139,7 @@ void MessageBubbleDelegate::paint(QPainter *painter,
         const int h = fm.height() + 12;
         QRect pill(0, 0, w, h);
         pill.moveCenter(option.rect.center());
-        pill.moveTop(option.rect.top() + kMargin / 2);
+        pill.moveTop(option.rect.top() + kMargin / 2 + headerH);
         const QColor base = (kind == 2) ? QColor(0xE5, 0x45, 0x45)
                                         : QColor(0x2E, 0xBD, 0x59);
         QColor bg = base; bg.setAlpha(46);
@@ -178,10 +220,11 @@ void MessageBubbleDelegate::paint(QPainter *painter,
 
 QSize MessageBubbleDelegate::sizeHint(const QStyleOptionViewItem &option,
                                       const QModelIndex &index) const {
+    const int headerH = startsNewDay(index) ? dateHeaderHeight(option) : 0;
     if (index.data(ChatModel::KindRole).toInt() != 0) {
         const QFontMetrics fm(scaledMetaFont(option.font));
-        return QSize(option.rect.width(), fm.height() + 12 + kMargin);
+        return QSize(option.rect.width(), fm.height() + 12 + kMargin + headerH);
     }
     const Layout L = computeLayout(option, index);
-    return QSize(option.rect.width(), L.bubble.height() + kMargin);
+    return QSize(option.rect.width(), L.bubble.height() + kMargin + headerH);
 }

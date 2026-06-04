@@ -84,8 +84,21 @@ qt6_add_resources(SOURCES resources/resources.qrc)
 add_executable(signal-client ${SOURCES})
 
 # Shown in the settings dialog so users can tell which build they run.
+# Prefer the full git tag (e.g. 0.1.0-rc19) over the bare project version;
+# local builds get the -N-g<hash>[-dirty] suffix, which is exactly what we
+# want to see in a bug report.
+execute_process(
+    COMMAND git describe --tags --dirty --always
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    OUTPUT_VARIABLE SIGNAL_GIT_VERSION
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+if(NOT SIGNAL_GIT_VERSION)
+    set(SIGNAL_GIT_VERSION "${PROJECT_VERSION}")
+endif()
+string(REGEX REPLACE "^v" "" SIGNAL_GIT_VERSION "${SIGNAL_GIT_VERSION}")
 target_compile_definitions(signal-client PRIVATE
-    SIGNAL_VERSION="${PROJECT_VERSION}")
+    SIGNAL_VERSION="${SIGNAL_GIT_VERSION}")
 
 target_link_libraries(signal-client PRIVATE
     Qt6::Core
