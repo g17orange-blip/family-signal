@@ -24,6 +24,16 @@ echo "==> Building"
 cmake -B "$BUILD_DIR" -S client -DCMAKE_BUILD_TYPE=Release
 cmake --build "$BUILD_DIR" -j
 
+# linuxdeploy-plugin-qt deploys every Qt SQL driver it finds and fails on the
+# ones whose system libraries are absent (Mimer wants libmimerapi.so, etc.);
+# we only use the bundled sqlite driver. This must happen AFTER the cmake
+# build — each plugin has a Qt CMake config file that errors out if the .so
+# disappears before configure.
+if [ -n "${QT_ROOT_DIR:-}" ] && [ -d "$QT_ROOT_DIR/plugins/sqldrivers" ]; then
+  echo "==> Dropping non-sqlite Qt SQL driver plugins"
+  find "$QT_ROOT_DIR/plugins/sqldrivers" -name 'libqsql*.so' ! -name 'libqsqlite.so' -print -delete
+fi
+
 echo "==> Fetching linuxdeploy + plugins"
 mkdir -p "$TOOLS"
 base="https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous"
