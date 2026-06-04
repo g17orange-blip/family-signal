@@ -49,6 +49,11 @@ public:
     // camera is never opened for an audio-only call.
     void prepare(bool withVideo);
 
+    // Human-readable capture diagnostics: which video/audio source elements
+    // exist and whether a short live test of each succeeds. Shown from the
+    // settings dialog so problems can be reported without log spelunking.
+    static QString mediaDiagnostics();
+
     bool start();   // builds the pipeline, returns false on construction failure
     void stop();
 

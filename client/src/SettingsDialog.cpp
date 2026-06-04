@@ -3,6 +3,7 @@
 #include "Config.h"
 #include "FirstRunDialog.h"
 #include "MessageHistory.h"
+#include "WebRtcSession.h"
 
 #include <QDialogButtonBox>
 #include <QGroupBox>
@@ -46,6 +47,20 @@ SettingsDialog::SettingsDialog(Config *config, MessageHistory *history, QWidget 
     connect(clear, &QPushButton::clicked, this, &SettingsDialog::onClearHistory);
     dataLay->addWidget(clear, 0, Qt::AlignLeft);
     layout->addWidget(dataBox);
+
+    // --- Diagnostics ---------------------------------------------------------
+    auto *diagBox = new QGroupBox(tr("Если что-то не работает"));
+    auto *diagLay = new QVBoxLayout(diagBox);
+    auto *diag = new QPushButton(tr("Проверить камеру и микрофон…"));
+    connect(diag, &QPushButton::clicked, this, [this] {
+        QMessageBox box(QMessageBox::Information, tr("Диагностика"),
+                        WebRtcSession::mediaDiagnostics(),
+                        QMessageBox::Close, this);
+        box.setTextInteractionFlags(Qt::TextSelectableByMouse);
+        box.exec();
+    });
+    diagLay->addWidget(diag, 0, Qt::AlignLeft);
+    layout->addWidget(diagBox);
 
 #ifndef SIGNAL_VERSION
 #define SIGNAL_VERSION "dev"

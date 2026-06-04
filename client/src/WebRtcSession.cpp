@@ -93,6 +93,77 @@ GstWebRTCSessionDescription *makeSessionDescription(const char *type, const QByt
 
 } // namespace
 
+QString WebRtcSession::mediaDiagnostics() {
+    ensureGstInit();
+    QString out;
+
+    // Which capture elements does this GStreamer build offer?
+    const char *interesting[] = {
+        "autovideosrc", "autoaudiosrc",
+#ifdef Q_OS_WIN
+        "mfvideosrc", "ksvideosrc", "wasapisrc", "wasapi2src", "directsoundsrc",
+#elif defined(Q_OS_MACOS)
+        "avfvideosrc", "osxaudiosrc",
+#else
+        "v4l2src", "pipewiresrc", "pulsesrc", "alsasrc",
+#endif
+        "webrtcdsp", "webrtcbin",
+    };
+    out += QStringLiteral("Элементы GStreamer:\n");
+    for (const char *name : interesting) {
+        GstElementFactory *f = gst_element_factory_find(name);
+        out += QStringLiteral("  %1 — %2\n")
+                   .arg(QLatin1String(name),
+                        f ? QStringLiteral("есть") : QStringLiteral("НЕТ"));
+        if (f) gst_object_unref(f);
+    }
+
+    // Live test: run each capture source into fakesink for a moment.
+    const struct { const char *label; const char *launch; } tests[] = {
+        {"Камера",   "autovideosrc ! fakesink"},
+        {"Микрофон", "autoaudiosrc ! fakesink"},
+    };
+    for (const auto &t : tests) {
+        GError *err = nullptr;
+        GstElement *pipe = gst_parse_launch(t.launch, &err);
+        if (!pipe) {
+            out += QStringLiteral("%1: не удалось собрать конвейер (%2)\n")
+                       .arg(QString::fromUtf8(t.label),
+                            err ? QString::fromUtf8(err->message)
+                                : QStringLiteral("?"));
+            if (err) g_error_free(err);
+            continue;
+        }
+        const GstStateChangeReturn r =
+            gst_element_set_state(pipe, GST_STATE_PLAYING);
+        GstState state = GST_STATE_NULL;
+        gst_element_get_state(pipe, &state, nullptr, 3 * GST_SECOND);
+        QString verdict;
+        if (r == GST_STATE_CHANGE_FAILURE || state != GST_STATE_PLAYING) {
+            GstBus *bus = gst_element_get_bus(pipe);
+            QString detail;
+            while (GstMessage *msg = gst_bus_pop_filtered(bus, GST_MESSAGE_ERROR)) {
+                GError *e = nullptr; gchar *dbg = nullptr;
+                gst_message_parse_error(msg, &e, &dbg);
+                if (e) detail = QString::fromUtf8(e->message);
+                if (e) g_error_free(e);
+                g_free(dbg);
+                gst_message_unref(msg);
+            }
+            gst_object_unref(bus);
+            verdict = QStringLiteral("НЕ РАБОТАЕТ%1")
+                          .arg(detail.isEmpty() ? QString()
+                                                : QStringLiteral(" — %1").arg(detail));
+        } else {
+            verdict = QStringLiteral("работает");
+        }
+        out += QStringLiteral("%1: %2\n").arg(QString::fromUtf8(t.label), verdict);
+        gst_element_set_state(pipe, GST_STATE_NULL);
+        gst_object_unref(pipe);
+    }
+    return out;
+}
+
 WebRtcSession::WebRtcSession(QObject *parent, Mode mode)
     : QObject(parent), m_mode(mode) {
     ensureGstInit();
