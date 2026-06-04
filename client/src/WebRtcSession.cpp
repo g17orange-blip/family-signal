@@ -217,7 +217,6 @@ WebRtcSession::~WebRtcSession() {
 
 void WebRtcSession::setConfig(const Config &cfg) { m_config = cfg; }
 void WebRtcSession::setVideoWindowHandle(quintptr handle) { m_videoHandle = handle; }
-void WebRtcSession::setSelfViewHandle(quintptr handle) { m_selfViewHandle = handle; }
 
 void WebRtcSession::prepare(bool withVideo) {
     if (m_pipeline && m_withVideo != withVideo) stop();   // rebuild on mode change
@@ -309,19 +308,16 @@ void WebRtcSession::buildPipelineIfNeeded() {
     // No hard framerate in the caps: plenty of webcams (especially on
     // Windows via Media Foundation) can't do exactly 30/1 at 640x480 and
     // the whole pipeline then fails to negotiate. Let the camera pick.
-    // The local preview is COMPOSITED into the remote picture (PiP in the
-    // bottom-right) rather than rendered in a second overlay window — a
-    // separate GL surface for the self-view dies with "Quit requested"
-    // when its little native window gets restacked/hidden (seen on macOS).
-    // Remote video plugs into comp.sink_0 when it arrives (zorder 0);
-    // until then the user sees themselves on black — instant feedback
-    // that the camera works.
-    const QByteArray selfPip = (m_withVideo && m_videoHandle) ?
+    // Self-view: frames are pulled into Qt via appsink and painted by a
+    // plain widget (rounded corners, always above the native video surface).
+    // Both previous approaches died: a second GL overlay window got "Quit
+    // requested" when restacked, and compositing into the remote frame put
+    // the preview under the window's control strip.
+    const QByteArray selfPip = m_withVideo ?
         "selftee. ! queue max-size-buffers=2 leaky=downstream ! "
-        "  videoscale ! video/x-raw,width=160,height=120 ! comp.sink_1 "
-        "compositor name=comp background=black "
-        "  sink_1::xpos=468 sink_1::ypos=348 sink_1::zorder=2 ! "
-        "  video/x-raw,width=640,height=480 ! videoconvert name=compout " : "";
+        "  videoconvert ! videoscale ! "
+        "  video/x-raw,format=RGBA,width=160,height=120 ! "
+        "  appsink name=selfsink max-buffers=1 drop=true sync=false " : "";
     const QByteArray videoBranch = m_withVideo ?
         "autovideosrc ! videoconvert ! videoscale ! "
         "  video/x-raw,width=640,height=480 ! "
@@ -364,17 +360,31 @@ void WebRtcSession::buildPipelineIfNeeded() {
     }
     m_webrtc = gst_bin_get_by_name(GST_BIN(m_pipeline), "webrtc");
 
-    // Finish the composited video output: the parse string ends at the
-    // named videoconvert; the actual overlay sink is platform-specific.
-    if (GstElement *out = gst_bin_get_by_name(GST_BIN(m_pipeline), "compout")) {
-        if (GstElement *sink = makeVideoSink()) {
-            if (m_videoHandle)
-                gst_video_overlay_set_window_handle(
-                    GST_VIDEO_OVERLAY(sink), static_cast<guintptr>(m_videoHandle));
-            gst_bin_add(GST_BIN(m_pipeline), sink);
-            gst_element_link(out, sink);
-        }
-        gst_object_unref(out);
+    // Pump self-view frames to the UI. The appsink callback fires on a
+    // streaming thread; QImage is implicitly shared, and the queued signal
+    // hands it to the GUI thread safely (deep copy taken below because the
+    // GstBuffer memory is unmapped right after).
+    if (GstElement *selfsink = gst_bin_get_by_name(GST_BIN(m_pipeline), "selfsink")) {
+        g_object_set(selfsink, "emit-signals", TRUE, nullptr);
+        g_signal_connect(selfsink, "new-sample",
+            G_CALLBACK(+[](GstElement *sink, gpointer s) -> GstFlowReturn {
+                auto *self = static_cast<WebRtcSession *>(s);
+                GstSample *sample = nullptr;
+                g_signal_emit_by_name(sink, "pull-sample", &sample);
+                if (!sample) return GST_FLOW_OK;
+                if (GstBuffer *buf = gst_sample_get_buffer(sample)) {
+                    GstMapInfo map;
+                    if (gst_buffer_map(buf, &map, GST_MAP_READ)) {
+                        const QImage frame(map.data, 160, 120, 160 * 4,
+                                           QImage::Format_RGBA8888);
+                        emit self->selfFrame(frame.copy());
+                        gst_buffer_unmap(buf, &map);
+                    }
+                }
+                gst_sample_unref(sample);
+                return GST_FLOW_OK;
+            }), this);
+        gst_object_unref(selfsink);
     }
 
     attachWebrtcSignals();
@@ -638,36 +648,6 @@ void WebRtcSession::onIncomingStream(void *padPtr) {
             const gchar *name = gst_structure_get_name(str);
             GstElement *sink = nullptr;
             if (g_str_has_prefix(name, "video/")) {
-                // Remote video joins the compositor (full-frame, beneath the
-                // self-view PiP) when the call pipeline has one.
-                if (GstElement *comp =
-                        gst_bin_get_by_name(GST_BIN(self->m_pipeline), "comp")) {
-                    GstElement *conv  = gst_element_factory_make("videoconvert", nullptr);
-                    GstElement *scale = gst_element_factory_make("videoscale", nullptr);
-                    GstElement *cf    = gst_element_factory_make("capsfilter", nullptr);
-                    GstCaps *vcaps = gst_caps_from_string(
-                        "video/x-raw,width=640,height=480");
-                    g_object_set(cf, "caps", vcaps, nullptr);
-                    gst_caps_unref(vcaps);
-                    gst_bin_add_many(GST_BIN(self->m_pipeline), conv, scale, cf, nullptr);
-                    gst_element_link_many(conv, scale, cf, nullptr);
-                    GstPad *compPad = gst_element_request_pad_simple(comp, "sink_%u");
-                    g_object_set(compPad, "zorder", 0u, nullptr);
-                    GstPad *cfSrc = gst_element_get_static_pad(cf, "src");
-                    gst_pad_link(cfSrc, compPad);
-                    gst_object_unref(cfSrc);
-                    gst_object_unref(compPad);
-                    gst_element_sync_state_with_parent(conv);
-                    gst_element_sync_state_with_parent(scale);
-                    gst_element_sync_state_with_parent(cf);
-                    GstPad *sinkpad = gst_element_get_static_pad(conv, "sink");
-                    gst_pad_link(newpad, sinkpad);
-                    gst_object_unref(sinkpad);
-                    gst_object_unref(comp);
-                    gst_caps_unref(caps);
-                    return;
-                }
-                // No compositor (shouldn't happen for video calls) — direct sink.
                 sink = makeVideoSink();
                 if (sink && self->m_videoHandle) {
                     gst_video_overlay_set_window_handle(

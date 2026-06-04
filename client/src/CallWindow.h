@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QImage>
 #include <QWidget>
 
 class QLabel;
@@ -16,8 +17,9 @@ public:
 
     // Native window handle of the video area. Pass to WebRtcSession.
     quintptr videoHandle() const;
-    // Small bottom-right self-view square (own camera preview).
-    quintptr selfViewHandle() const;
+    // Own-camera preview: feed frames here (queued from the session); the
+    // rounded overlay shows itself on the first frame.
+    void setSelfFrame(const QImage &frame);
     void setSelfViewVisible(bool visible);
 
     void setPeerName(const QString &name);
@@ -39,8 +41,10 @@ protected:
 private:
     void repositionSelfView();
 
+    class SelfView;   // rounded own-camera preview, painted from QImages
+
     QWidget     *m_videoArea;
-    QWidget     *m_selfView;
+    SelfView    *m_selfView;
     QLabel      *m_status;
     QPushButton *m_acceptBtn;
     QPushButton *m_hangupBtn;

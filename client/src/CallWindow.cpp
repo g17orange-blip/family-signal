@@ -2,10 +2,46 @@
 
 #include <QCloseEvent>
 #include <QHBoxLayout>
+#include <QPainter>
+#include <QPainterPath>
 #include <QResizeEvent>
 #include <QLabel>
 #include <QPushButton>
 #include <QVBoxLayout>
+
+// Rounded own-camera preview. Plain QPainter rendering of QImage frames —
+// no native video surface, so nothing can die underneath it and it stacks
+// above the GStreamer overlay reliably (it's a native sibling raised last).
+class CallWindow::SelfView : public QWidget {
+public:
+    explicit SelfView(QWidget *parent) : QWidget(parent) {
+        setAttribute(Qt::WA_NativeWindow, true);   // stack above the video view
+        setFixedSize(176, 132);
+        hide();
+    }
+    void setFrame(const QImage &frame) {
+        m_frame = frame;
+        if (!isVisible()) { show(); raise(); }
+        update();
+    }
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        QPainterPath clip;
+        clip.addRoundedRect(rect(), 14, 14);
+        p.setClipPath(clip);
+        p.fillRect(rect(), QColor(0x10, 0x14, 0x18));
+        if (!m_frame.isNull())
+            p.drawImage(rect(), m_frame);
+        p.setClipping(false);
+        p.setPen(QPen(QColor(255, 255, 255, 60), 1.5));
+        p.setBrush(Qt::NoBrush);
+        p.drawRoundedRect(QRectF(rect()).adjusted(1, 1, -1, -1), 14, 14);
+    }
+private:
+    QImage m_frame;
+};
 
 CallWindow::CallWindow(QWidget *parent) : QWidget(parent) {
     setWindowTitle(tr("Звонок"));
@@ -23,17 +59,9 @@ CallWindow::CallWindow(QWidget *parent) : QWidget(parent) {
     m_videoArea->setPalette(p);
     m_videoArea->setMinimumSize(320, 240);
 
-    // Own camera preview: a small native square pinned to the bottom-right
-    // corner of the video area (GStreamer paints into it directly).
-    m_selfView = new QWidget(m_videoArea);
-    m_selfView->setObjectName(QStringLiteral("selfView"));
-    m_selfView->setAttribute(Qt::WA_NativeWindow, true);
-    m_selfView->setAutoFillBackground(true);
-    QPalette sp = m_selfView->palette();
-    sp.setColor(QPalette::Window, QColor(0x10, 0x14, 0x18));
-    m_selfView->setPalette(sp);
-    m_selfView->setFixedSize(176, 132);
-    m_selfView->hide();
+    // Own camera preview pinned to the bottom-right corner of the video
+    // area; frames arrive via setSelfFrame().
+    m_selfView = new SelfView(m_videoArea);
 
     m_status = new QLabel(tr("Соединение..."), this);
     m_status->setAlignment(Qt::AlignCenter);
@@ -77,8 +105,9 @@ quintptr CallWindow::videoHandle() const {
     return static_cast<quintptr>(m_videoArea->winId());
 }
 
-quintptr CallWindow::selfViewHandle() const {
-    return static_cast<quintptr>(m_selfView->winId());
+void CallWindow::setSelfFrame(const QImage &frame) {
+    repositionSelfView();
+    m_selfView->setFrame(frame);
 }
 
 void CallWindow::setSelfViewVisible(bool visible) {
@@ -90,9 +119,10 @@ void CallWindow::setSelfViewVisible(bool visible) {
 }
 
 void CallWindow::repositionSelfView() {
+    // Top-right: the bottom edge sits too close to the status/controls strip.
     const int margin = 12;
     m_selfView->move(m_videoArea->width() - m_selfView->width() - margin,
-                     m_videoArea->height() - m_selfView->height() - margin);
+                     margin);
 }
 
 void CallWindow::resizeEvent(QResizeEvent *event) {
@@ -122,6 +152,9 @@ void CallWindow::showIncoming(const QString &peerName, bool video) {
 void CallWindow::showActive() {
     m_acceptBtn->hide();
     m_hangupBtn->setText(tr("Завершить"));
+    // The preview pops up again with the first frame of the new call;
+    // audio-only calls produce none, so it stays hidden for them.
+    m_selfView->hide();
 }
 
 void CallWindow::closeEvent(QCloseEvent *event) {

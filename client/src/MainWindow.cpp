@@ -197,6 +197,12 @@ void MainWindow::start() {
             this, &MainWindow::onTextDelivered);
     connect(m_webrtc, &WebRtcSession::peerReadMessages,
             this, &MainWindow::onPeerReadMessages);
+    // Emitted from a GStreamer streaming thread — the cross-thread connect
+    // is queued automatically, painting happens on the UI thread.
+    connect(m_webrtc, &WebRtcSession::selfFrame, this, [this](const QImage &f) {
+        if (m_callWindow && m_callWindow->isVisible())
+            m_callWindow->setSelfFrame(f);
+    });
     connect(m_webrtc, &WebRtcSession::channelOpen, this, [this] {
         // A call's DataChannel also delivers queued text and receipts.
         if (!m_webrtc->remotePeerId().isEmpty()) {
