@@ -46,9 +46,10 @@ namespace {
 void pointGstAtBundledPlugins() {
     const QDir appDir(QCoreApplication::applicationDirPath());
     const QStringList candidates = {
-        appDir.filePath(QStringLiteral("../PlugIns/gstreamer-1.0")), // macOS .app
-        appDir.filePath(QStringLiteral("../lib/gstreamer-1.0")),     // *nix layout
-        appDir.filePath(QStringLiteral("gstreamer-1.0")),            // alongside exe
+        appDir.filePath(QStringLiteral("../Resources/gstreamer-1.0")), // macOS .app
+        appDir.filePath(QStringLiteral("../PlugIns/gstreamer-1.0")),   // legacy .app layout
+        appDir.filePath(QStringLiteral("../lib/gstreamer-1.0")),       // *nix layout
+        appDir.filePath(QStringLiteral("gstreamer-1.0")),              // alongside exe
     };
     for (const QString &c : candidates) {
         const QString path = QFileInfo(c).canonicalFilePath();

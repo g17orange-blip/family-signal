@@ -10,7 +10,7 @@
 #
 # macdeployqt bundles Qt and the directly-linked GStreamer core libraries;
 # the GStreamer *plugins* are loaded at runtime and aren't linked, so we copy a
-# curated WebRTC set into Contents/PlugIns/gstreamer-1.0 and use dylibbundler to
+# curated WebRTC set into Contents/Resources/gstreamer-1.0 and use dylibbundler to
 # pull in and relocate their dependencies. The client points GStreamer at this
 # bundled directory at startup (see pointGstAtBundledPlugins in WebRtcSession).
 
@@ -39,7 +39,11 @@ echo "==> macdeployqt (Qt + linked libs)"
 "$QT_PREFIX/bin/macdeployqt" "$APP" -no-strip
 
 echo "==> Bundling GStreamer plugins"
-PLUGDIR="$APP/Contents/PlugIns/gstreamer-1.0"
+# Resources, not PlugIns: codesign requires everything under Contents/PlugIns
+# to be a *bundle*, and a plain directory of plugin dylibs breaks signing of
+# the whole app. Resources content is sealed as data — dylibs there are fine
+# for an ad-hoc-signed app (notarization would object, but we don't notarize).
+PLUGDIR="$APP/Contents/Resources/gstreamer-1.0"
 mkdir -p "$PLUGDIR"
 fix_args=()
 for p in "${PLUGINS[@]}"; do
@@ -63,9 +67,16 @@ dylibbundler -cd -of -b \
 # code signatures — Apple Silicon then refuses to launch the app with a
 # misleading "damaged" dialog. Re-sign everything ad-hoc (no certificate
 # needed; users still right-click→Open the unidentified-developer app once).
+# Not --deep: nested code is signed explicitly, innermost first.
 echo "==> Re-signing (ad-hoc)"
-codesign --force --deep -s - "$APP"
-codesign --verify --deep "$APP" && echo "    signature OK"
+find "$APP/Contents" -type f \( -name '*.dylib' -o -name '*.so' \) \
+  -exec codesign --force -s - {} +
+[ -f "$APP/Contents/MacOS/gst-plugin-scanner" ] && \
+  codesign --force -s - "$APP/Contents/MacOS/gst-plugin-scanner"
+find "$APP/Contents/Frameworks" -maxdepth 1 -name '*.framework' \
+  -exec codesign --force -s - {} + 2>/dev/null || true
+codesign --force -s - "$APP"
+codesign --verify "$APP" && echo "    signature OK"
 
 echo "==> Creating dmg"
 DMG="$BUILD_DIR/signal-macos-$ARCH.dmg"
