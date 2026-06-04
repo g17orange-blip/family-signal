@@ -16,12 +16,18 @@ public:
         IdRole = Qt::UserRole + 1,
         DisplayNameRole,
         OnlineRole,
+        UnreadRole,
     };
 
     explicit ContactsModel(QObject *parent = nullptr);
 
     void setContacts(QVector<Contact> contacts);
     void setOnlinePeers(const QStringList &onlineIds);
+
+    // Unread message badge: bumped for messages arriving into a conversation
+    // that is not currently on screen; cleared when the user opens it.
+    void incrementUnread(const QString &peerId);
+    void clearUnread(const QString &peerId);
 
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;
     QVariant data(const QModelIndex &index, int role) const override;
@@ -31,5 +37,6 @@ public:
     int     indexOf(const QString &peerId) const;
 
 private:
-    QVector<Contact> m_contacts;
+    QVector<Contact>    m_contacts;
+    QHash<QString, int> m_unread;   // peerId → count
 };

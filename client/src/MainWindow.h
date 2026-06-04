@@ -16,6 +16,7 @@ class MessageHistory;
 class MessageInputBar;
 class QListView;
 class QSplitter;
+class QStackedWidget;
 class SignalingClient;
 class WebRtcSession;
 
@@ -98,6 +99,7 @@ private:
     ChatModel       *m_chatModel     = nullptr;
 
     QSplitter       *m_splitter     = nullptr;
+    QStackedWidget  *m_rightStack   = nullptr;
     QListView       *m_contactsView = nullptr;
     ChatHeader      *m_chatHeader   = nullptr;
     ChatView        *m_chatView     = nullptr;

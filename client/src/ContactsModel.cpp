@@ -34,9 +34,25 @@ QVariant ContactsModel::data(const QModelIndex &index, int role) const {
             return c.id;
         case OnlineRole:
             return c.online;
+        case UnreadRole:
+            return m_unread.value(c.id, 0);
         default:
             return {};
     }
+}
+
+void ContactsModel::incrementUnread(const QString &peerId) {
+    const int row = indexOf(peerId);
+    if (row < 0) return;
+    ++m_unread[peerId];
+    emit dataChanged(index(row), index(row), {UnreadRole});
+}
+
+void ContactsModel::clearUnread(const QString &peerId) {
+    const int row = indexOf(peerId);
+    if (row < 0 || m_unread.value(peerId, 0) == 0) return;
+    m_unread.remove(peerId);
+    emit dataChanged(index(row), index(row), {UnreadRole});
 }
 
 QHash<int, QByteArray> ContactsModel::roleNames() const {

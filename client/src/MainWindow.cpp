@@ -4,6 +4,7 @@
 #include "ChatHeader.h"
 #include "ChatModel.h"
 #include "ChatView.h"
+#include "ContactItemDelegate.h"
 #include "ContactsModel.h"
 #include "FirstRunDialog.h"
 #include "MessageHistory.h"
@@ -12,10 +13,12 @@
 #include "SignalingClient.h"
 #include "WebRtcSession.h"
 
+#include <QLabel>
 #include <QListView>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QSplitter>
+#include <QStackedWidget>
 #include <QStatusBar>
 #include <QStringList>
 #include <QVBoxLayout>
@@ -34,6 +37,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     m_contactsView->setFocusPolicy(Qt::NoFocus);
     m_contactsView->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_contactsView->setMinimumWidth(220);
+    m_contactsView->setItemDelegate(new ContactItemDelegate(m_contactsView));
     connect(m_contactsView, &QListView::clicked,
             this, &MainWindow::onContactSelected);
 
@@ -44,17 +48,32 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     m_chatModel  = new ChatModel(this);
     m_chatView->setChatModel(m_chatModel);
 
-    auto *rightPane = new QWidget;
-    auto *rightLayout = new QVBoxLayout(rightPane);
-    rightLayout->setContentsMargins(0, 0, 0, 0);
-    rightLayout->setSpacing(0);
-    rightLayout->addWidget(m_chatHeader);
-    rightLayout->addWidget(m_chatView, 1);
-    rightLayout->addWidget(m_inputBar);
+    auto *chatPane = new QWidget;
+    auto *chatLayout = new QVBoxLayout(chatPane);
+    chatLayout->setContentsMargins(0, 0, 0, 0);
+    chatLayout->setSpacing(0);
+    chatLayout->addWidget(m_chatHeader);
+    chatLayout->addWidget(m_chatView, 1);
+    chatLayout->addWidget(m_inputBar);
+
+    // Until a contact is picked the right side shows only a hint — no call
+    // buttons, no input field. Otherwise the grandfather presses "call"
+    // before choosing whom to call and nothing (visibly) happens.
+    auto *placeholder = new QLabel(
+        tr("← Выберите слева,\nс кем поговорить"));
+    placeholder->setAlignment(Qt::AlignCenter);
+    placeholder->setObjectName(QStringLiteral("noChatPlaceholder"));
+    placeholder->setStyleSheet(
+        QStringLiteral("font-size: 22px; color: #8a9aa5;"));
+
+    m_rightStack = new QStackedWidget;
+    m_rightStack->addWidget(placeholder);   // index 0 — nothing selected
+    m_rightStack->addWidget(chatPane);      // index 1 — conversation
+    m_rightStack->setCurrentIndex(0);
 
     m_splitter = new QSplitter(Qt::Horizontal);
     m_splitter->addWidget(m_contactsView);
-    m_splitter->addWidget(rightPane);
+    m_splitter->addWidget(m_rightStack);
     m_splitter->setStretchFactor(0, 0);
     m_splitter->setStretchFactor(1, 1);
     m_splitter->setSizes({260, 840});
@@ -99,6 +118,7 @@ void MainWindow::startDemo() {
     // Pre-select the grandfather and pretend his conversation has some
     // history so the bubble delegate has something to render.
     m_currentContact = contacts[0];
+    m_rightStack->setCurrentIndex(1);
     m_chatHeader->setContact(m_currentContact.displayName, true);
     m_chatHeader->setCallEnabled(true);
     m_inputBar->setEnabled(true);
@@ -230,6 +250,8 @@ void MainWindow::onContactSelected(const QModelIndex &index) {
     const Contact c = m_contactsModel->contactAt(index.row());
     if (c.id.isEmpty()) return;
     m_currentContact = c;
+    m_rightStack->setCurrentIndex(1);   // swap the placeholder for the chat
+    m_contactsModel->clearUnread(c.id);
     m_chatHeader->setContact(c.displayName, c.online);
     m_chatHeader->setCallEnabled(c.online);
     m_inputBar->setEnabled(true);
@@ -301,6 +323,9 @@ void MainWindow::onTextReceived(const QString &fromPeerId, const QString &msgId,
     // duplicates are expected — drop them by msg_id.
     if (m_history && m_history->containsMsgId(msgId)) return;
     appendMessage(fromPeerId, fromPeerId, text, msgId);
+    // Red badge for conversations that aren't on screen right now.
+    if (m_currentContact.id != fromPeerId)
+        m_contactsModel->incrementUnread(fromPeerId);
 }
 
 void MainWindow::onTextDelivered(const QString &msgId) {
@@ -333,8 +358,13 @@ WebRtcSession *MainWindow::ensureChatSession(const QString &peerId) {
             });
     connect(s, &WebRtcSession::textReceived,  this, &MainWindow::onTextReceived);
     connect(s, &WebRtcSession::textDelivered, this, &MainWindow::onTextDelivered);
-    connect(s, &WebRtcSession::channelOpen, this,
-            [this, peerId] { flushQueuedMessages(peerId); });
+    connect(s, &WebRtcSession::channelOpen, this, [this, peerId] {
+        qInfo() << "[chat] channel OPEN to" << peerId;
+        flushQueuedMessages(peerId);
+    });
+    connect(s, &WebRtcSession::error, this, [peerId](const QString &e) {
+        qWarning() << "[chat] session error" << peerId << ":" << e;
+    });
 
     s->start();
     m_chatSessions.insert(peerId, s);
@@ -343,6 +373,8 @@ WebRtcSession *MainWindow::ensureChatSession(const QString &peerId) {
 
 void MainWindow::syncChatSessions(const QStringList &onlinePeers) {
     if (!m_signaling) return;   // demo mode
+    qInfo() << "[chat] presence:" << onlinePeers << "self:" << m_config.userId
+            << "sessions:" << m_chatSessions.keys();
 
     // Tear down sessions to peers that went offline.
     for (auto it = m_chatSessions.begin(); it != m_chatSessions.end();) {
@@ -359,6 +391,7 @@ void MainWindow::syncChatSessions(const QStringList &onlinePeers) {
     // the other side just answers our offer.
     for (const QString &peer : onlinePeers) {
         if (m_config.userId < peer && !m_chatSessions.contains(peer)) {
+            qInfo() << "[chat] initiating silent session to" << peer;
             ensureChatSession(peer)->startCall(peer);   // chat mode: data only
         }
     }

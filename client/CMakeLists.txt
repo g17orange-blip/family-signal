@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(signal-client LANGUAGES C CXX)   # C for the vendored monocypher
+project(signal-client VERSION 0.1.0 LANGUAGES C CXX)   # C for the vendored monocypher
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -46,6 +46,8 @@ set(SOURCES
     src/WebRtcSession.cpp
     src/WebRtcSession.h
     src/Contact.h
+    src/ContactItemDelegate.cpp
+    src/ContactItemDelegate.h
     src/ContactsModel.cpp
     src/ContactsModel.h
     src/HistoryCipher.cpp
@@ -79,6 +81,10 @@ qt6_add_resources(SOURCES resources/resources.qrc)
 
 add_executable(signal-client ${SOURCES})
 
+# Shown in the settings dialog so users can tell which build they run.
+target_compile_definitions(signal-client PRIVATE
+    SIGNAL_VERSION="${PROJECT_VERSION}")
+
 target_link_libraries(signal-client PRIVATE
     Qt6::Core
     Qt6::Gui
@@ -94,5 +100,13 @@ if(WIN32)
     target_link_libraries(signal-client PRIVATE crypt32)   # DPAPI for HistoryCipher
 endif()
 if(APPLE)
-    set_target_properties(signal-client PROPERTIES MACOSX_BUNDLE TRUE)
+    # Custom Info.plist: macOS TCC kills any process touching the camera or
+    # microphone unless the bundle declares usage descriptions.
+    set_target_properties(signal-client PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/packaging/Info.plist.in"
+        MACOSX_BUNDLE_BUNDLE_NAME "Signal"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "ru.family-signal.client"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}")
 endif()

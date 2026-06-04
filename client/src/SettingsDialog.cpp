@@ -47,6 +47,14 @@ SettingsDialog::SettingsDialog(Config *config, MessageHistory *history, QWidget 
     dataLay->addWidget(clear, 0, Qt::AlignLeft);
     layout->addWidget(dataBox);
 
+#ifndef SIGNAL_VERSION
+#define SIGNAL_VERSION "dev"
+#endif
+    auto *version = new QLabel(tr("Signal, версия %1").arg(QStringLiteral(SIGNAL_VERSION)));
+    version->setObjectName(QStringLiteral("versionLabel"));
+    version->setStyleSheet(QStringLiteral("color: gray;"));
+    layout->addWidget(version);
+
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     layout->addWidget(buttons);
