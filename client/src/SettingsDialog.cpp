@@ -2,8 +2,12 @@
 
 #include "Config.h"
 #include "FirstRunDialog.h"
+#include "Logging.h"
 #include "MessageHistory.h"
 #include "WebRtcSession.h"
+
+#include <QDesktopServices>
+#include <QUrl>
 
 #include <QDialogButtonBox>
 #include <QGroupBox>
@@ -60,6 +64,12 @@ SettingsDialog::SettingsDialog(Config *config, MessageHistory *history, QWidget 
         box.exec();
     });
     diagLay->addWidget(diag, 0, Qt::AlignLeft);
+
+    auto *logs = new QPushButton(tr("Открыть папку с логами…"));
+    connect(logs, &QPushButton::clicked, this, [] {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(Logging::directory()));
+    });
+    diagLay->addWidget(logs, 0, Qt::AlignLeft);
     layout->addWidget(diagBox);
 
 #ifndef SIGNAL_VERSION

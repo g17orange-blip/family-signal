@@ -52,6 +52,8 @@ set(SOURCES
     src/ContactsModel.h
     src/HistoryCipher.cpp
     src/HistoryCipher.h
+    src/Logging.cpp
+    src/Logging.h
     src/Message.h
     src/MessageHistory.cpp
     src/MessageHistory.h

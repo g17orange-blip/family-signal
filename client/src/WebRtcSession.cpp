@@ -259,10 +259,13 @@ void WebRtcSession::buildPipelineIfNeeded() {
     QByteArray aec;
     if (GstElementFactory *f = gst_element_factory_find("webrtcdsp")) {
         gst_object_unref(f);
-        // webrtcdsp wants S16 mono at a fixed rate.
+        // webrtcdsp wants S16 mono at a fixed rate. The probe is referenced
+        // BY EXPLICIT NAME: auto-generated names ("webrtcechoprobe0", 1, …)
+        // increment per process, so after a pipeline rebuild the dsp would
+        // look for probe0 while the new probe is probe1 — and kill the call.
         aec = "audio/x-raw,format=S16LE,rate=48000,channels=1 ! "
-              "webrtcdsp echo-cancel=true noise-suppression=true "
-              "  gain-control=true ! ";
+              "webrtcdsp probe=echoprobe echo-cancel=true "
+              "  noise-suppression=true gain-control=true ! ";
         m_haveAec = true;
     }
 
@@ -290,7 +293,7 @@ void WebRtcSession::buildPipelineIfNeeded() {
     const QByteArray aecPlayback = m_haveAec ?
         "audiotestsrc wave=silence is-live=true ! "
         "  audiomixer name=amix ! audioconvert ! audioresample ! "
-        "  webrtcechoprobe ! autoaudiosink " : "";
+        "  webrtcechoprobe name=echoprobe ! autoaudiosink " : "";
     const QByteArray launch = core + videoBranch +
         "autoaudiosrc ! audioconvert ! audioresample ! " + aec +
         "  queue max-size-buffers=10 leaky=downstream ! "
@@ -662,6 +665,12 @@ void WebRtcSession::pollBus() {
                 GError *err = nullptr;
                 gchar *dbg = nullptr;
                 gst_message_parse_error(msg, &err, &dbg);
+                // The debug detail names the failing element — keep it in
+                // the log even though the UI only shows the short message.
+                qWarning() << "[gst] ERROR from"
+                           << (GST_MESSAGE_SRC(msg) ? GST_OBJECT_NAME(GST_MESSAGE_SRC(msg)) : "?")
+                           << ":" << (err ? err->message : "?")
+                           << "|" << (dbg ? dbg : "");
                 emit error(QString::fromUtf8(err ? err->message : "gst error"));
                 if (err) g_error_free(err);
                 g_free(dbg);

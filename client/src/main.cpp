@@ -1,3 +1,4 @@
+#include "Logging.h"
 #include "MainWindow.h"
 
 #include <QApplication>
@@ -9,6 +10,7 @@ int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("signal"));
     QCoreApplication::setApplicationName(QStringLiteral("signal"));
+    Logging::install();   // before anything touches GStreamer
     app.setWindowIcon(QIcon(QStringLiteral(":/signal.png")));
 
     // Embedded stylesheet — turns the default light theme into a dark one
