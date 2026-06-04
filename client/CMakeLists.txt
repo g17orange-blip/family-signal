@@ -98,6 +98,7 @@ target_link_libraries(signal-client PRIVATE
 if(WIN32)
     set_target_properties(signal-client PROPERTIES WIN32_EXECUTABLE TRUE)
     target_link_libraries(signal-client PRIVATE crypt32)   # DPAPI for HistoryCipher
+    target_sources(signal-client PRIVATE packaging/signal.rc)   # exe icon
 endif()
 if(APPLE)
     # Custom Info.plist: macOS TCC kills any process touching the camera or
@@ -108,5 +109,9 @@ if(APPLE)
         MACOSX_BUNDLE_BUNDLE_NAME "Signal"
         MACOSX_BUNDLE_GUI_IDENTIFIER "ru.family-signal.client"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
-        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}")
+        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_ICON_FILE "signal.icns")
+    target_sources(signal-client PRIVATE resources/signal.icns)
+    set_source_files_properties(resources/signal.icns PROPERTIES
+        MACOSX_PACKAGE_LOCATION Resources)
 endif()

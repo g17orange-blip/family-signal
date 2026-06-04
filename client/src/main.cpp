@@ -2,12 +2,14 @@
 
 #include <QApplication>
 #include <QFile>
+#include <QIcon>
 #include <QStringList>
 
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("signal"));
     QCoreApplication::setApplicationName(QStringLiteral("signal"));
+    app.setWindowIcon(QIcon(QStringLiteral(":/signal.png")));
 
     // Embedded stylesheet — turns the default light theme into a dark one
     // closer in feel to Telegram's dark mode.
