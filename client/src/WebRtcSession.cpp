@@ -108,6 +108,8 @@ QString WebRtcSession::mediaDiagnostics() {
         "v4l2src", "pipewiresrc", "pulsesrc", "alsasrc",
 #endif
         "webrtcdsp", "webrtcbin",
+        "x264enc", "opusenc", "rtph264pay", "rtpopuspay",
+        "dtlssrtpenc", "nicesink",
     };
     out += QStringLiteral("Элементы GStreamer:\n");
     for (const char *name : interesting) {
@@ -122,6 +124,13 @@ QString WebRtcSession::mediaDiagnostics() {
     const struct { const char *label; const char *launch; } tests[] = {
         {"Камера",   "autovideosrc ! fakesink"},
         {"Микрофон", "autoaudiosrc ! fakesink"},
+        // The exact capture→encode chain a video call uses; if this fails
+        // while the plain camera test passes, it's caps negotiation or the
+        // encoder, not the device.
+        {"Видеотракт звонка",
+         "autovideosrc ! videoconvert ! videoscale ! "
+         "video/x-raw,width=640,height=480 ! "
+         "x264enc tune=zerolatency speed-preset=ultrafast bitrate=600 ! fakesink"},
     };
     for (const auto &t : tests) {
         GError *err = nullptr;
@@ -262,9 +271,12 @@ void WebRtcSession::buildPipelineIfNeeded() {
         "  stun-server=" + m_config.stunUrl.toUtf8() + " ";
     // Audio-only calls skip the whole camera branch — the camera LED never
     // lights up and the SDP carries no video m-line.
+    // No hard framerate in the caps: plenty of webcams (especially on
+    // Windows via Media Foundation) can't do exactly 30/1 at 640x480 and
+    // the whole pipeline then fails to negotiate. Let the camera pick.
     const QByteArray videoBranch = m_withVideo ?
         "autovideosrc ! videoconvert ! videoscale ! "
-        "  video/x-raw,width=640,height=480,framerate=30/1 ! "
+        "  video/x-raw,width=640,height=480 ! "
         "  queue max-size-buffers=10 leaky=downstream ! "
         "  x264enc tune=zerolatency speed-preset=ultrafast bitrate=600 key-int-max=30 ! "
         "  video/x-h264,profile=constrained-baseline ! "
