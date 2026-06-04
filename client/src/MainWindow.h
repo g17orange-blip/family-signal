@@ -62,6 +62,9 @@ private slots:
     void onCallConnected();
     void onCallEnded();
     void onWebRtcError(const QString &message);
+    void onCallConnectionInterrupted();
+    void onCallConnectionRestored();
+    void onCallConnectionFailed();
 
     void onTextReceived(const QString &fromPeerId, const QString &msgId,
                         const QString &text);
@@ -117,6 +120,14 @@ private:
     QString   m_activeCallPeer;
     bool      m_activeCallVideo = true;
     QDateTime m_callConnectedAt;   // invalid until the call connects
+
+    // Dropped-call recovery (flaky networks). The original caller redials
+    // automatically; the callee auto-accepts the caller's redial within the
+    // grace window so nobody has to press "Принять" a second time.
+    void attemptRedial(const QString &peerId, bool video, int triesLeft);
+    int       m_redialAttempts = 0;   // reset on connect / manual call
+    QString   m_autoAcceptPeer;       // redial from them is answered silently
+    QDateTime m_autoAcceptUntil;
 
     Config           m_config;
     SignalingClient *m_signaling   = nullptr;

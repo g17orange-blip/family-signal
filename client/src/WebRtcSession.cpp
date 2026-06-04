@@ -222,6 +222,20 @@ WebRtcSession::WebRtcSession(QObject *parent, Mode mode)
     ensureGstInit();
     m_busTimer.setInterval(30);
     connect(&m_busTimer, &QTimer::timeout, this, &WebRtcSession::pollBus);
+
+    // ice-connection-state notifications arrive on a GStreamer thread; the
+    // auto-queued connection moves them here so the timer below is only
+    // touched from the Qt thread.
+    connect(this, &WebRtcSession::iceStateRaw,
+            this, &WebRtcSession::onIceStateChanged);
+    // A wifi blip shows up as "disconnected" and usually heals by itself
+    // within seconds; only declare the call dead if it doesn't.
+    m_iceTimeout.setSingleShot(true);
+    m_iceTimeout.setInterval(25000);
+    connect(&m_iceTimeout, &QTimer::timeout, this, [this] {
+        m_iceInterrupted = false;
+        emit connectionFailed();
+    });
 }
 
 WebRtcSession::~WebRtcSession() {
@@ -256,6 +270,8 @@ void WebRtcSession::stop() {
     m_channelOpen = false;
     m_offerCreated = false;
     m_answerApplied = false;
+    m_iceTimeout.stop();
+    m_iceInterrupted = false;
 }
 
 void WebRtcSession::buildPipelineIfNeeded() {
@@ -361,10 +377,15 @@ void WebRtcSession::buildPipelineIfNeeded() {
         "  audio/x-raw,format=S16LE,rate=48000,channels=1 ! "
         "  webrtcechoprobe name=echoprobe ! "
         "  audioconvert ! audioresample ! autoaudiosink " : "";
+    // inband-fec: Opus packs a low-quality copy of the previous frame into
+    // each packet, so the decoder reconstructs single lost packets instead
+    // of glitching — voice survives the unstable links in the family.
+    // packet-loss-percentage steers how much bitrate goes to redundancy.
     const QByteArray launch = core + videoBranch +
         "autoaudiosrc ! audioconvert ! audioresample ! " + aec +
         "  queue max-size-buffers=10 leaky=downstream ! "
-        "  opusenc bitrate=32000 ! rtpopuspay pt=111 ! "
+        "  opusenc bitrate=32000 inband-fec=true packet-loss-percentage=20 ! "
+        "  rtpopuspay pt=111 ! "
         "  application/x-rtp,media=audio,encoding-name=OPUS,payload=111 ! webrtc. " +
         aecPlayback;
 
@@ -429,6 +450,42 @@ void WebRtcSession::attachWebrtcSignals() {
                      G_CALLBACK(&WebRtcSession::onIncomingStreamCb), this);
     g_signal_connect(m_webrtc, "on-data-channel",
                      G_CALLBACK(&WebRtcSession::onDataChannelCb), this);
+
+    // Loss recovery on flaky links. do-nack negotiates RTX: the receiver
+    // asks for lost RTP packets to be re-sent instead of showing artifacts
+    // until the next keyframe. Fires for transceivers created on both the
+    // offer and the answer path; a peer that doesn't support RTX simply
+    // leaves it out of its SDP, so old clients still interoperate.
+    g_signal_connect(m_webrtc, "on-new-transceiver",
+        G_CALLBACK(+[](GstElement *, GObject *transceiver, gpointer) {
+            g_object_set(transceiver, "do-nack", TRUE, nullptr);
+        }), nullptr);
+
+    // The jitterbuffer must report packets it gave up waiting for —
+    // otherwise opusdec never sees the gap and the Opus inband FEC
+    // (enabled on the encoder below) has nothing to repair against.
+    if (GstElement *rtpbin = gst_bin_get_by_name(GST_BIN(m_webrtc), "rtpbin")) {
+        g_signal_connect(rtpbin, "new-jitterbuffer",
+            G_CALLBACK(+[](GstElement *, GstElement *jbuf, guint, guint, gpointer) {
+                g_object_set(jbuf, "do-lost", TRUE, nullptr);
+            }), nullptr);
+        gst_object_unref(rtpbin);
+    } else {
+        qWarning() << "webrtcbin has no 'rtpbin' child — do-lost not set,"
+                      " Opus FEC will not recover lost packets";
+    }
+
+    // Surface connectivity drops to the UI ("connection lost…" instead of a
+    // frozen last frame). The notify runs on a GStreamer thread; iceStateRaw
+    // is queued over to the Qt thread (see the constructor).
+    g_signal_connect(m_webrtc, "notify::ice-connection-state",
+        G_CALLBACK(+[](GObject *obj, GParamSpec *, gpointer s) {
+            GstWebRTCICEConnectionState state =
+                GST_WEBRTC_ICE_CONNECTION_STATE_NEW;
+            g_object_get(obj, "ice-connection-state", &state, nullptr);
+            emit static_cast<WebRtcSession *>(s)->iceStateRaw(
+                static_cast<int>(state));
+        }), this);
 }
 
 // --- Public call-control surface ----------------------------------------
@@ -649,6 +706,36 @@ void WebRtcSession::onIceCandidate(unsigned mlineIndex, const QString &candidate
     emit localIceReady(m_peerId, candidate, QString(), static_cast<int>(mlineIndex));
 }
 
+void WebRtcSession::onIceStateChanged(int state) {
+    if (!m_inCall) return;
+    switch (static_cast<GstWebRTCICEConnectionState>(state)) {
+    case GST_WEBRTC_ICE_CONNECTION_STATE_DISCONNECTED:
+        // Often transient (wifi blip, router hiccup) — libnice keeps
+        // probing and usually comes back on its own. Tell the UI and arm
+        // the grace timer; only its expiry makes the failure final.
+        if (!m_iceInterrupted) {
+            m_iceInterrupted = true;
+            m_iceTimeout.start();
+            emit connectionInterrupted();
+        }
+        break;
+    case GST_WEBRTC_ICE_CONNECTION_STATE_CONNECTED:
+    case GST_WEBRTC_ICE_CONNECTION_STATE_COMPLETED:
+        if (m_iceInterrupted) {
+            m_iceInterrupted = false;
+            m_iceTimeout.stop();
+            emit connectionRestored();
+        }
+        break;
+    case GST_WEBRTC_ICE_CONNECTION_STATE_FAILED:
+        m_iceInterrupted = false;
+        m_iceTimeout.stop();
+        emit connectionFailed();
+        break;
+    default: break;
+    }
+}
+
 void WebRtcSession::onIncomingStreamCb(GstElement *, void *pad, gpointer self) {
     static_cast<WebRtcSession *>(self)->onIncomingStream(pad);
 }
@@ -661,6 +748,18 @@ void WebRtcSession::onIncomingStream(void *padPtr) {
     // decodebin then fires its own pad-added when raw audio/video appears,
     // which we route to the appropriate sink.
     GstElement *decodebin = gst_element_factory_make("decodebin", nullptr);
+    // decodebin picks opusdec itself, so its loss-recovery knobs are set
+    // here as it appears: use-inband-fec consumes the redundant copy the
+    // sender embeds (opusenc inband-fec=true), plc conceals what even FEC
+    // can't recover. Both need the jitterbuffer's do-lost gap events — see
+    // attachWebrtcSignals.
+    g_signal_connect(decodebin, "deep-element-added",
+        G_CALLBACK(+[](GstBin *, GstBin *, GstElement *element, gpointer) {
+            GstElementFactory *factory = gst_element_get_factory(element);
+            if (factory && g_strcmp0(GST_OBJECT_NAME(factory), "opusdec") == 0)
+                g_object_set(element, "use-inband-fec", TRUE, "plc", TRUE,
+                             nullptr);
+        }), nullptr);
     g_signal_connect(decodebin, "pad-added",
         G_CALLBACK(+[](GstElement *, GstPad *newpad, gpointer s) {
             WebRtcSession *self = static_cast<WebRtcSession *>(s);

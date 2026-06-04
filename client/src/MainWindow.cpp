@@ -22,6 +22,7 @@
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QStringList>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QVector>
 #include <QWidget>
@@ -194,6 +195,12 @@ void MainWindow::start() {
             this, &MainWindow::onCallEnded);
     connect(m_webrtc, &WebRtcSession::error,
             this, &MainWindow::onWebRtcError);
+    connect(m_webrtc, &WebRtcSession::connectionInterrupted,
+            this, &MainWindow::onCallConnectionInterrupted);
+    connect(m_webrtc, &WebRtcSession::connectionRestored,
+            this, &MainWindow::onCallConnectionRestored);
+    connect(m_webrtc, &WebRtcSession::connectionFailed,
+            this, &MainWindow::onCallConnectionFailed);
     connect(m_webrtc, &WebRtcSession::textReceived,
             this, &MainWindow::onTextReceived);
     connect(m_webrtc, &WebRtcSession::textDelivered,
@@ -458,6 +465,25 @@ WebRtcSession *MainWindow::ensureChatSession(const QString &peerId) {
     connect(s, &WebRtcSession::error, this, [peerId](const QString &e) {
         qWarning() << "[chat] session error" << peerId << ":" << e;
     });
+    // ICE died (network outage outlived the grace timer): drop the zombie
+    // session. Presence alone wouldn't catch this — the peer-to-peer path
+    // can break while both sides still reach the signaling server. The
+    // deterministic initiator re-offers; the other side waits for it.
+    connect(s, &WebRtcSession::connectionFailed, this, [this, peerId] {
+        qWarning() << "[chat] ICE failed to" << peerId << "— rebuilding session";
+        if (WebRtcSession *dead = m_chatSessions.take(peerId)) {
+            dead->stop();
+            dead->deleteLater();
+        }
+        if (m_config.userId < peerId) {
+            QTimer::singleShot(2000, this, [this, peerId] {
+                const int row = m_contactsModel->indexOf(peerId);
+                if (row < 0 || !m_contactsModel->contactAt(row).online) return;
+                if (m_chatSessions.contains(peerId)) return;
+                ensureChatSession(peerId)->startCall(peerId);
+            });
+        }
+    });
 
     s->start();
     m_chatSessions.insert(peerId, s);
@@ -503,8 +529,16 @@ CallWindow *MainWindow::ensureCallWindow() {
     return m_callWindow;
 }
 
-void MainWindow::onStartVideoCall() { startOutgoingCall(/*withVideo=*/true); }
-void MainWindow::onStartAudioCall() { startOutgoingCall(/*withVideo=*/false); }
+// User-initiated calls reset the redial budget; the automatic path
+// (attemptRedial) must not, or a flapping network would dial forever.
+void MainWindow::onStartVideoCall() {
+    m_redialAttempts = 0;
+    startOutgoingCall(/*withVideo=*/true);
+}
+void MainWindow::onStartAudioCall() {
+    m_redialAttempts = 0;
+    startOutgoingCall(/*withVideo=*/false);
+}
 
 void MainWindow::startOutgoingCall(bool withVideo) {
     if (m_currentContact.id.isEmpty() || !m_currentContact.online) return;
@@ -539,6 +573,42 @@ void MainWindow::onIncomingOffer(const QString &fromPeerId, const QString &sdp,
         ensureChatSession(fromPeerId)->acceptOffer(fromPeerId, sdp);
         return;
     }
+    // Still ringing and the same caller offers again: their session was
+    // rebuilt (ICE failed on their side mid-ring) — refresh the parked
+    // offer, keep ringing.
+    if (m_pendingOffer.peerId == fromPeerId) {
+        m_pendingOffer.sdp   = sdp;
+        m_pendingOffer.video = kind != QLatin1String("call-audio");
+        return;
+    }
+
+    // Dropped-call recovery: answer silently — the user already said yes to
+    // this conversation, don't make them find the green button again
+    // mid-sentence. Two ways to get here:
+    //  - resumesDroppedCall: our side noticed the failure first, hung up
+    //    and armed the auto-accept window (onCallConnectionFailed);
+    //  - resumesActiveCall: the CALLER noticed first and redials while our
+    //    grace timer is still running. Our session is a zombie — replace
+    //    it instead of answering "busy". Must be checked BEFORE the busy
+    //    guard below, which would otherwise bounce the recovery attempt.
+    const bool resumesDroppedCall = fromPeerId == m_autoAcceptPeer &&
+        QDateTime::currentDateTime() < m_autoAcceptUntil;
+    const bool resumesActiveCall = m_webrtc && m_webrtc->isInCall() &&
+        m_webrtc->remotePeerId() == fromPeerId;
+    if (resumesDroppedCall || resumesActiveCall) {
+        if (resumesActiveCall) m_webrtc->hangup();
+        m_autoAcceptPeer.clear();
+        selectContactById(fromPeerId);
+        m_pendingOffer = {fromPeerId, sdp, kind != QLatin1String("call-audio")};
+        CallWindow *w = ensureCallWindow();
+        w->setPeerName(m_currentContact.displayName);
+        w->showActive();
+        w->setStatus(tr("Восстанавливаем связь…"));
+        w->show();
+        onAcceptIncomingCall();
+        return;
+    }
+
     // Busy: an active call (or an accept screen already on display) must
     // not be disturbed by a second caller — answer them "busy" and leave a
     // missed-call note instead.
@@ -607,6 +677,8 @@ void MainWindow::onIncomingIce(const QString &fromPeerId, const QString &candida
 }
 
 void MainWindow::onIncomingBye(const QString &fromPeerId) {
+    // The peer ended the conversation deliberately — stop any recovery.
+    if (fromPeerId == m_autoAcceptPeer) m_autoAcceptPeer.clear();
     // Bye from someone who is NOT the active/pending call peer is just a
     // busy-decline of OUR outgoing offer or noise — never tear down the
     // current conversation because of it.
@@ -661,6 +733,7 @@ void MainWindow::onCallConnected() {
             m_callWindow->showMaximized();
     }
     if (!m_callConnectedAt.isValid()) m_callConnectedAt = QDateTime::currentDateTime();
+    m_redialAttempts = 0;   // a fresh outage gets a fresh redial budget
 }
 
 void MainWindow::onCallEnded() {
@@ -679,7 +752,75 @@ void MainWindow::onWebRtcError(const QString &message) {
     }
 }
 
+// --- Dropped-call recovery -------------------------------------------------
+// ICE went "disconnected": usually a transient wifi/router blip that libnice
+// heals by itself. Show what's happening instead of a frozen last frame.
+void MainWindow::onCallConnectionInterrupted() {
+    if (m_callWindow && m_callWindow->isVisible())
+        m_callWindow->setStatus(tr("Связь прервалась, восстанавливаем…"));
+}
+
+void MainWindow::onCallConnectionRestored() {
+    if (m_callWindow && m_callWindow->isVisible())
+        m_callWindow->setStatus(tr("В разговоре"));
+}
+
+// ICE gave up (or the interruption outlived the grace timer). The session is
+// dead — tear it down, then the original caller redials automatically and
+// the callee silently accepts that redial (see onIncomingOffer), so neither
+// side has to do anything to get the conversation back.
+void MainWindow::onCallConnectionFailed() {
+    if (m_activeCallPeer.isEmpty()) {
+        m_webrtc->hangup();
+        return;
+    }
+    const QString peer  = m_activeCallPeer;
+    const bool    video = m_activeCallVideo;
+    const bool    caller = m_webrtc->isCaller();
+    logCallEvent(peer, tr("Связь оборвалась"), /*bad=*/true);
+    m_activeCallPeer.clear();
+    m_webrtc->hangup();   // hides the call window via callEnded
+
+    if (caller && m_redialAttempts < 3) {
+        ++m_redialAttempts;
+        statusBar()->showMessage(tr("Связь оборвалась — перезваниваем…"), 8000);
+        // Give the network a moment; attemptRedial keeps retrying while the
+        // peer's presence is still catching up after the outage.
+        QTimer::singleShot(2000, this, [this, peer, video] {
+            attemptRedial(peer, video, /*triesLeft=*/5);
+        });
+    } else if (!caller) {
+        // The caller is about to redial us — answer it without ringing.
+        m_autoAcceptPeer  = peer;
+        m_autoAcceptUntil = QDateTime::currentDateTime().addSecs(60);
+        statusBar()->showMessage(
+            tr("Связь оборвалась — ждём восстановления…"), 8000);
+    }
+}
+
+void MainWindow::attemptRedial(const QString &peerId, bool video, int triesLeft) {
+    // Somebody is already talking (or ringing) — don't barge in.
+    if (m_webrtc->isInCall() || !m_pendingOffer.peerId.isEmpty()) return;
+    const int row = m_contactsModel->indexOf(peerId);
+    const bool online = row >= 0 && m_contactsModel->contactAt(row).online;
+    if (!online) {
+        // Presence drops out together with the network; poll a few times
+        // while it comes back before giving up.
+        if (triesLeft > 0)
+            QTimer::singleShot(3000, this, [this, peerId, video, triesLeft] {
+                attemptRedial(peerId, video, triesLeft - 1);
+            });
+        return;
+    }
+    selectContactById(peerId);
+    startOutgoingCall(video);
+}
+
 void MainWindow::onHangupRequested() {
+    // A deliberate hangup ends the conversation for real — no silent
+    // auto-accept of a later call, no pending redials.
+    m_autoAcceptPeer.clear();
+    m_redialAttempts = 3;
     if (!m_pendingOffer.peerId.isEmpty()) {
         // Declining an incoming call we never accepted — media never started.
         m_signaling->sendBye(m_pendingOffer.peerId);

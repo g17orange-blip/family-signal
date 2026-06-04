@@ -73,6 +73,7 @@ public:
 
     bool isInCall() const { return m_inCall; }
     bool isChannelOpen() const { return m_channelOpen; }
+    bool isCaller() const { return m_isCaller; }
     QString remotePeerId() const { return m_peerId; }
 
 signals:
@@ -86,6 +87,17 @@ signals:
     void callConnected();
     void callEnded();
     void error(const QString &message);
+
+    // ICE connectivity, for flaky networks. Interrupted may self-heal (a
+    // wifi blip): restored follows. Failed is terminal for this session —
+    // ICE gave up, or the interruption outlived the grace timer; the owner
+    // should tear the session down (and possibly redial).
+    void connectionInterrupted();
+    void connectionRestored();
+    void connectionFailed();
+    // Internal: marshals the ice-connection-state notify from the
+    // GStreamer thread onto the Qt thread. Do not connect from outside.
+    void iceStateRaw(int state);
 
     // Video frames (RGBA), emitted from streaming threads — connections to
     // UI objects are automatically queued; paint on the GUI thread.
@@ -119,6 +131,7 @@ private:
 
     void onNegotiationNeeded();
     void onIceCandidate(unsigned mlineIndex, const QString &candidate);
+    void onIceStateChanged(int state);  // runs on the Qt thread
     void onOfferCreated(void *promise);
     void onAnswerCreated(void *promise);
     void onIncomingStream(void *pad);
@@ -147,4 +160,6 @@ private:
     bool    m_answerApplied = false;  // ignore duplicate remote answers
 
     QTimer m_busTimer;
+    QTimer m_iceTimeout;             // disconnected → failed grace timer
+    bool   m_iceInterrupted = false;
 };
