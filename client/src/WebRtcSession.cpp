@@ -290,10 +290,17 @@ void WebRtcSession::buildPipelineIfNeeded() {
     // otherwise). Build it statically: a silent live source keeps the mixer
     // and sink prerolled; remote audio is mixed in when it arrives
     // (see onIncomingStream).
+    // Caps pinned to the DSP's native format (S16/48k/mono) along the whole
+    // chain: leaving the mixer and probe to negotiate freely ends in
+    // "not-negotiated" on Windows. Convert/resample AFTER the probe adapts
+    // to whatever the actual audio sink wants.
     const QByteArray aecPlayback = m_haveAec ?
         "audiotestsrc wave=silence is-live=true ! "
-        "  audiomixer name=amix ! audioconvert ! audioresample ! "
-        "  webrtcechoprobe name=echoprobe ! autoaudiosink " : "";
+        "  audio/x-raw,format=S16LE,rate=48000,channels=1 ! "
+        "  audiomixer name=amix ! "
+        "  audio/x-raw,format=S16LE,rate=48000,channels=1 ! "
+        "  webrtcechoprobe name=echoprobe ! "
+        "  audioconvert ! audioresample ! autoaudiosink " : "";
     const QByteArray launch = core + videoBranch +
         "autoaudiosrc ! audioconvert ! audioresample ! " + aec +
         "  queue max-size-buffers=10 leaky=downstream ! "
@@ -592,10 +599,20 @@ void WebRtcSession::onIncomingStream(void *padPtr) {
                     ? gst_bin_get_by_name(GST_BIN(self->m_pipeline), "amix")
                     : nullptr;
                 if (amix) {
-                    GstPad *mixPad  = gst_element_request_pad_simple(amix, "sink_%u");
-                    GstPad *resSrc  = gst_element_get_static_pad(res, "src");
-                    gst_pad_link(resSrc, mixPad);
-                    gst_object_unref(resSrc);
+                    // The mixer runs locked to S16/48k/mono — bring the
+                    // remote audio to exactly that before its pad.
+                    GstElement *cf = gst_element_factory_make("capsfilter", nullptr);
+                    GstCaps *mixCaps = gst_caps_from_string(
+                        "audio/x-raw,format=S16LE,rate=48000,channels=1");
+                    g_object_set(cf, "caps", mixCaps, nullptr);
+                    gst_caps_unref(mixCaps);
+                    gst_bin_add(GST_BIN(self->m_pipeline), cf);
+                    gst_element_link(res, cf);
+                    gst_element_sync_state_with_parent(cf);
+                    GstPad *mixPad = gst_element_request_pad_simple(amix, "sink_%u");
+                    GstPad *cfSrc  = gst_element_get_static_pad(cf, "src");
+                    gst_pad_link(cfSrc, mixPad);
+                    gst_object_unref(cfSrc);
                     gst_object_unref(mixPad);
                     gst_object_unref(amix);
                 } else {

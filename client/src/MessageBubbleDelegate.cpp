@@ -17,6 +17,17 @@ constexpr int kMetaSpacing    = 4;
 
 // Bubble fills at most this fraction of the row width.
 constexpr qreal kMaxBubbleFrac = 0.65;
+
+// The app stylesheet sizes fonts in pixels, so pointSizeF() is often -1 —
+// scale whichever metric is actually set (avoids a warning per paint call).
+QFont scaledMetaFont(const QFont &base) {
+    QFont f = base;
+    if (f.pointSizeF() > 0)
+        f.setPointSizeF(f.pointSizeF() * 0.85);
+    else if (f.pixelSize() > 0)
+        f.setPixelSize(int(f.pixelSize() * 0.85));
+    return f;
+}
 }
 
 MessageBubbleDelegate::MessageBubbleDelegate(QObject *parent)
@@ -34,8 +45,7 @@ MessageBubbleDelegate::computeLayout(const QStyleOptionViewItem &option,
     const int rowW = option.rect.width();
     const int maxBubbleW = int(rowW * kMaxBubbleFrac);
 
-    QFont metaFont = option.font;
-    metaFont.setPointSizeF(metaFont.pointSizeF() * 0.85);
+    const QFont metaFont = scaledMetaFont(option.font);
     QFontMetrics fm(option.font);
     QFontMetrics metaFm(metaFont);
 
@@ -94,9 +104,7 @@ void MessageBubbleDelegate::paint(QPainter *painter,
     opt.setWrapMode(QTextOption::WordWrap);
     painter->drawText(L.text, text, opt);
 
-    QFont metaFont = option.font;
-    metaFont.setPointSizeF(metaFont.pointSizeF() * 0.85);
-    painter->setFont(metaFont);
+    painter->setFont(scaledMetaFont(option.font));
     painter->setPen(metaColor);
     const QString meta = sentAt.toString(QStringLiteral("HH:mm"));
     if (!outgoing) {
