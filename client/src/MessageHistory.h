@@ -66,6 +66,8 @@ private:
     bool migrateAddMsgId();
     // v3: add read / read_sent columns (read receipts).
     bool migrateAddRead();
+    // v4: add the kind column (call-event system notes).
+    bool migrateAddKind();
     QString decryptText(const QVariant &stored) const;
 
     QSqlDatabase  m_db;

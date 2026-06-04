@@ -40,6 +40,7 @@ QVariant ChatModel::data(const QModelIndex &index, int role) const {
         case OutgoingRole:  return m.isOutgoing(m_selfId);
         case DeliveredRole: return m.delivered;
         case ReadRole:      return m.read;
+        case KindRole:      return m.kind;
         default:            return {};
     }
 }
@@ -52,6 +53,7 @@ QHash<int, QByteArray> ChatModel::roleNames() const {
     names.insert(OutgoingRole,  "outgoing");
     names.insert(DeliveredRole, "delivered");
     names.insert(ReadRole,      "read");
+    names.insert(KindRole,      "kind");
     return names;
 }
 

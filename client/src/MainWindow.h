@@ -106,6 +106,12 @@ private:
     } m_pendingOffer;
     bool m_outgoingVideo = true;   // kind for offers created by m_webrtc
 
+    // Active-call bookkeeping for the Telegram-style call log pills.
+    void logCallEvent(const QString &peerId, const QString &text, bool bad);
+    QString   m_activeCallPeer;
+    bool      m_activeCallVideo = true;
+    QDateTime m_callConnectedAt;   // invalid until the call connects
+
     Config           m_config;
     SignalingClient *m_signaling   = nullptr;
     WebRtcSession   *m_webrtc      = nullptr;

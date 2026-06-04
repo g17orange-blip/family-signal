@@ -82,6 +82,34 @@ void MessageBubbleDelegate::paint(QPainter *painter,
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing);
 
+    // Call-event system notes: a small centered pill, green for completed
+    // calls, red for declined/missed — like Telegram's call log lines.
+    const int kind = index.data(ChatModel::KindRole).toInt();
+    if (kind != 0) {
+        const QString text = index.data(ChatModel::TextRole).toString()
+            + QStringLiteral("  ")
+            + index.data(ChatModel::SentAtRole).toDateTime()
+                  .toString(QStringLiteral("HH:mm"));
+        const QFont f = scaledMetaFont(option.font);
+        painter->setFont(f);
+        const QFontMetrics fm(f);
+        const int w = fm.horizontalAdvance(text) + 28;
+        const int h = fm.height() + 12;
+        QRect pill(0, 0, w, h);
+        pill.moveCenter(option.rect.center());
+        pill.moveTop(option.rect.top() + kMargin / 2);
+        const QColor base = (kind == 2) ? QColor(0xE5, 0x45, 0x45)
+                                        : QColor(0x2E, 0xBD, 0x59);
+        QColor bg = base; bg.setAlpha(46);
+        QPainterPath path;
+        path.addRoundedRect(pill, h / 2.0, h / 2.0);
+        painter->fillPath(path, bg);
+        painter->setPen(base);
+        painter->drawText(pill, Qt::AlignCenter, text);
+        painter->restore();
+        return;
+    }
+
     const Layout L = computeLayout(option, index);
     const bool outgoing = index.data(ChatModel::OutgoingRole).toBool();
     const QString text = index.data(ChatModel::TextRole).toString();
@@ -150,6 +178,10 @@ void MessageBubbleDelegate::paint(QPainter *painter,
 
 QSize MessageBubbleDelegate::sizeHint(const QStyleOptionViewItem &option,
                                       const QModelIndex &index) const {
+    if (index.data(ChatModel::KindRole).toInt() != 0) {
+        const QFontMetrics fm(scaledMetaFont(option.font));
+        return QSize(option.rect.width(), fm.height() + 12 + kMargin);
+    }
     const Layout L = computeLayout(option, index);
     return QSize(option.rect.width(), L.bubble.height() + kMargin);
 }

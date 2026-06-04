@@ -275,6 +275,20 @@ void MainWindow::selectContactById(const QString &id) {
     if (row >= 0) onContactSelected(m_contactsModel->index(row));
 }
 
+void MainWindow::logCallEvent(const QString &peerId, const QString &text, bool bad) {
+    Message m;
+    m.kind      = bad ? Message::CallEventBad : Message::CallEventGood;
+    m.peerId    = peerId;
+    m.senderId  = m_config.userId;   // local note; never leaves this device
+    m.text      = text;
+    m.sentAt    = QDateTime::currentDateTime();
+    m.delivered = true;   // keeps it out of the offline queue
+    m.read      = true;
+    if (m_history) m_history->append(m);
+    if (m_currentContact.id == peerId) m_chatModel->append(m);
+    else m_contactsModel->incrementUnread(peerId);
+}
+
 Message MainWindow::appendMessage(const QString &peerId, const QString &senderId,
                                   const QString &text, const QString &msgId) {
     Message m;
@@ -458,6 +472,9 @@ void MainWindow::startOutgoingCall(bool withVideo) {
         return;
     }
     m_outgoingVideo = withVideo;
+    m_activeCallPeer = m_currentContact.id;
+    m_activeCallVideo = withVideo;
+    m_callConnectedAt = QDateTime();
     CallWindow *w = ensureCallWindow();
     w->setPeerName(m_currentContact.displayName);
     w->showActive();
@@ -489,10 +506,8 @@ void MainWindow::onIncomingOffer(const QString &fromPeerId, const QString &sdp,
         const int row = m_contactsModel->indexOf(fromPeerId);
         const QString name =
             row >= 0 ? m_contactsModel->contactAt(row).displayName : fromPeerId;
-        appendMessage(fromPeerId, fromPeerId,
-                      tr("📞 Звонил(а) вам, пока вы разговаривали"));
-        if (m_currentContact.id != fromPeerId)
-            m_contactsModel->incrementUnread(fromPeerId);
+        logCallEvent(fromPeerId, tr("Звонил(а) вам, пока вы разговаривали"),
+                     /*bad=*/true);
         statusBar()->showMessage(
             tr("%1 звонил(а), пока вы разговаривали").arg(name), 8000);
         return;
@@ -510,6 +525,9 @@ void MainWindow::onAcceptIncomingCall() {
     if (m_pendingOffer.peerId.isEmpty() || !m_webrtc) return;
     const PendingOffer offer = m_pendingOffer;
     m_pendingOffer = {};
+    m_activeCallPeer = offer.peerId;
+    m_activeCallVideo = offer.video;
+    m_callConnectedAt = QDateTime();
     CallWindow *w = ensureCallWindow();
     w->showActive();
     w->setStatus(tr("Соединяем…"));
@@ -551,12 +569,27 @@ void MainWindow::onIncomingBye(const QString &fromPeerId) {
     // busy-decline of OUR outgoing offer or noise — never tear down the
     // current conversation because of it.
     if (m_pendingOffer.peerId == fromPeerId) {   // caller gave up ringing us
+        logCallEvent(fromPeerId,
+                     m_pendingOffer.video ? tr("Пропущенный видеозвонок")
+                                          : tr("Пропущенный звонок"), /*bad=*/true);
         m_pendingOffer = {};
         if (m_callWindow) m_callWindow->hide();
         return;
     }
     if (!m_webrtc || m_webrtc->remotePeerId() != fromPeerId) return;
     const bool wasRinging = !m_webrtc->isChannelOpen();
+    if (fromPeerId == m_activeCallPeer) {
+        const QString what = m_activeCallVideo ? tr("Видеозвонок") : tr("Звонок");
+        if (m_callConnectedAt.isValid()) {
+            const qint64 secs = m_callConnectedAt.secsTo(QDateTime::currentDateTime());
+            logCallEvent(m_activeCallPeer,
+                         tr("%1 · %2 мин %3 сек").arg(what).arg(secs / 60).arg(secs % 60),
+                         /*bad=*/false);
+        } else {
+            logCallEvent(m_activeCallPeer, tr("%1 отклонён").arg(what), /*bad=*/true);
+        }
+        m_activeCallPeer.clear();
+    }
     m_webrtc->hangup();
     if (m_callWindow) m_callWindow->hide();
     if (wasRinging)
@@ -580,6 +613,7 @@ void MainWindow::onLocalIce(const QString &peerId, const QString &candidate,
 
 void MainWindow::onCallConnected() {
     if (m_callWindow) m_callWindow->setStatus(tr("В разговоре"));
+    if (!m_callConnectedAt.isValid()) m_callConnectedAt = QDateTime::currentDateTime();
 }
 
 void MainWindow::onCallEnded() {
@@ -602,9 +636,24 @@ void MainWindow::onHangupRequested() {
     if (!m_pendingOffer.peerId.isEmpty()) {
         // Declining an incoming call we never accepted — media never started.
         m_signaling->sendBye(m_pendingOffer.peerId);
+        logCallEvent(m_pendingOffer.peerId,
+                     m_pendingOffer.video ? tr("Видеозвонок отклонён")
+                                          : tr("Звонок отклонён"), /*bad=*/true);
         m_pendingOffer = {};
         if (m_callWindow) m_callWindow->hide();
         return;
+    }
+    if (!m_activeCallPeer.isEmpty()) {
+        const QString what = m_activeCallVideo ? tr("Видеозвонок") : tr("Звонок");
+        if (m_callConnectedAt.isValid()) {
+            const qint64 secs = m_callConnectedAt.secsTo(QDateTime::currentDateTime());
+            logCallEvent(m_activeCallPeer,
+                         tr("%1 · %2 мин %3 сек").arg(what).arg(secs / 60).arg(secs % 60),
+                         /*bad=*/false);
+        } else {
+            logCallEvent(m_activeCallPeer, tr("%1 отменён").arg(what), /*bad=*/true);
+        }
+        m_activeCallPeer.clear();
     }
     if (!m_currentContact.id.isEmpty()) m_signaling->sendBye(m_currentContact.id);
     m_webrtc->hangup();

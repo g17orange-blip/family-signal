@@ -91,6 +91,25 @@ GstWebRTCSessionDescription *makeSessionDescription(const char *type, const QByt
     return gst_webrtc_session_description_new(kind, msg);
 }
 
+// Platform-priority video sinks, all GstVideoOverlay-capable. Windows
+// first tries Direct3D 11: glimagesink needs GL shader support that older
+// GPUs/drivers (the target hardware!) often lack.
+GstElement *makeVideoSink() {
+    const char *candidates[] = {
+#ifdef Q_OS_WIN
+        "d3d11videosink", "d3dvideosink", "glimagesink",
+#elif defined(Q_OS_MACOS)
+        "glimagesink",
+#else
+        "glimagesink", "xvimagesink", "ximagesink",
+#endif
+    };
+    for (const char *c : candidates) {
+        if (GstElement *s = gst_element_factory_make(c, nullptr)) return s;
+    }
+    return nullptr;
+}
+
 } // namespace
 
 QString WebRtcSession::mediaDiagnostics() {
@@ -577,9 +596,7 @@ void WebRtcSession::onIncomingStream(void *padPtr) {
             const gchar *name = gst_structure_get_name(str);
             GstElement *sink = nullptr;
             if (g_str_has_prefix(name, "video/")) {
-                // glimagesink works on Linux/macOS/Windows and supports
-                // GstVideoOverlay so we can embed into a Qt widget.
-                sink = gst_element_factory_make("glimagesink", nullptr);
+                sink = makeVideoSink();
                 if (sink && self->m_videoHandle) {
                     gst_video_overlay_set_window_handle(
                         GST_VIDEO_OVERLAY(sink),

@@ -45,7 +45,26 @@ bool MessageHistory::open() {
     q.exec(QStringLiteral(
         "CREATE INDEX IF NOT EXISTS idx_messages_peer_time "
         "ON messages(peer_id, sent_at)"));
-    return migrateToEncrypted() && migrateAddMsgId() && migrateAddRead();
+    return migrateToEncrypted() && migrateAddMsgId() && migrateAddRead() &&
+           migrateAddKind();
+}
+
+// v4: message kind (text vs local call-event notes).
+bool MessageHistory::migrateAddKind() {
+    QSqlQuery v(m_db);
+    if (!v.exec(QStringLiteral("PRAGMA user_version")) || !v.next()) {
+        m_error = v.lastError().text();
+        return false;
+    }
+    if (v.value(0).toInt() >= 4) return true;
+    QSqlQuery q(m_db);
+    if (!q.exec(QStringLiteral(
+            "ALTER TABLE messages ADD COLUMN kind INTEGER NOT NULL DEFAULT 0"))) {
+        m_error = q.lastError().text();
+        return false;
+    }
+    q.exec(QStringLiteral("PRAGMA user_version = 4"));
+    return true;
 }
 
 // v3: read receipts. `read` — outgoing: peer displayed it / incoming: we
@@ -152,14 +171,15 @@ bool MessageHistory::append(Message &msg) {
         msg.msgId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
-        "INSERT INTO messages (msg_id, peer_id, sender_id, text, sent_at, delivered) "
-        "VALUES (?, ?, ?, ?, ?, ?)"));
+        "INSERT INTO messages (msg_id, peer_id, sender_id, text, sent_at, delivered, kind) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)"));
     q.addBindValue(msg.msgId);
     q.addBindValue(msg.peerId);
     q.addBindValue(msg.senderId);
     q.addBindValue(m_cipher.encrypt(msg.text));
     q.addBindValue(msg.sentAt.toMSecsSinceEpoch());
     q.addBindValue(msg.delivered ? 1 : 0);
+    q.addBindValue(msg.kind);
     if (!q.exec()) {
         m_error = q.lastError().text();
         return false;
@@ -284,7 +304,7 @@ QVector<Message> MessageHistory::loadConversation(const QString &peerId, int lim
     QVector<Message> out;
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
-        "SELECT id, msg_id, peer_id, sender_id, text, sent_at, delivered, read "
+        "SELECT id, msg_id, peer_id, sender_id, text, sent_at, delivered, read, kind "
         "FROM messages WHERE peer_id = ? "
         "ORDER BY sent_at DESC LIMIT ?"));
     q.addBindValue(peerId);
@@ -300,6 +320,7 @@ QVector<Message> MessageHistory::loadConversation(const QString &peerId, int lim
         m.sentAt    = QDateTime::fromMSecsSinceEpoch(q.value(5).toLongLong());
         m.delivered = q.value(6).toInt() != 0;
         m.read      = q.value(7).toInt() != 0;
+        m.kind      = q.value(8).toInt();
         out.prepend(m); // reverse so callers get oldest-first
     }
     return out;
