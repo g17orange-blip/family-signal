@@ -387,10 +387,11 @@ void WebRtcSession::addRemoteIce(const QString &candidate, int sdpMLineIndex) {
 }
 
 void WebRtcSession::hangup() {
-    if (m_pipeline) gst_element_set_state(m_pipeline, GST_STATE_READY);
-    m_inCall = false;
-    m_dataChannel = nullptr;
-    m_channelOpen = false;
+    // Tear the whole pipeline down, not just to READY: webrtcbin is not
+    // reusable across sessions — transceivers and ICE state accumulate and
+    // the next call fails to negotiate until the app is restarted. The
+    // next start() builds a fresh pipeline.
+    stop();
     emit callEnded();
 }
 

@@ -560,7 +560,15 @@ void MainWindow::onCallEnded() {
 }
 
 void MainWindow::onWebRtcError(const QString &message) {
-    statusBar()->showMessage(tr("Медиа: %1").arg(message), 5000);
+    statusBar()->showMessage(tr("Медиа: %1").arg(message), 8000);
+    // A pipeline ERROR is fatal for the session — clean up instead of
+    // leaving a zombie call that blocks every following attempt.
+    if (m_callWindow && m_callWindow->isVisible()) {
+        m_callWindow->setStatus(tr("Ошибка: %1").arg(message));
+        if (!m_currentContact.id.isEmpty() && m_signaling)
+            m_signaling->sendBye(m_currentContact.id);
+        m_webrtc->hangup();
+    }
 }
 
 void MainWindow::onHangupRequested() {
