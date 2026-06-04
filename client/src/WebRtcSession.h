@@ -26,10 +26,16 @@ typedef struct _GstElement GstElement;
 //
 // Text messages travel over a DataChannel that is created as part of the
 // initial offer (so it exists for both sides as soon as ICE completes).
+//
+// Chat mode (Mode::Chat): the pipeline is just a webrtcbin — no camera, no
+// microphone, no media m-lines in the SDP. Used for the silent background
+// connections that deliver queued text whenever both peers are online.
 class WebRtcSession : public QObject {
     Q_OBJECT
 public:
-    explicit WebRtcSession(QObject *parent = nullptr);
+    enum class Mode { Call, Chat };
+
+    explicit WebRtcSession(QObject *parent = nullptr, Mode mode = Mode::Call);
     ~WebRtcSession() override;
 
     void setConfig(const Config &cfg);
@@ -48,11 +54,14 @@ public:
     void addRemoteIce(const QString &candidate, int sdpMLineIndex);
     void hangup();
 
-    // Send a chat message over the DataChannel. Returns false if the
-    // channel isn't open yet (caller should queue).
-    bool sendText(const QString &text);
+    // Send a chat message over the DataChannel. `msgId` identifies the
+    // message for the delivery ack (textDelivered fires when the peer
+    // confirms receipt). Returns false if the channel isn't open yet —
+    // the message then stays queued in the history DB.
+    bool sendText(const QString &msgId, const QString &text);
 
     bool isInCall() const { return m_inCall; }
+    bool isChannelOpen() const { return m_channelOpen; }
     QString remotePeerId() const { return m_peerId; }
 
 signals:
@@ -68,9 +77,13 @@ signals:
     void error(const QString &message);
 
     // Inbound chat message from the remote peer over the DataChannel.
-    void textReceived(const QString &fromPeerId, const QString &text);
-    // Outbound chat message was confirmed received (DataChannel send-complete).
-    void textDelivered(const QString &text);
+    // msgId is empty for legacy plain-string messages.
+    void textReceived(const QString &fromPeerId, const QString &msgId,
+                      const QString &text);
+    // The remote peer acknowledged receiving this message.
+    void textDelivered(const QString &msgId);
+    // DataChannel is open — queued messages can be flushed now.
+    void channelOpen();
 
 private:
     // Bus poll on Qt thread — see comment in WebRtcSession.cpp.
@@ -94,9 +107,14 @@ private:
     void attachDataChannel(void *channel);
 
     void buildPipelineIfNeeded();
+    void attachWebrtcSignals();
     void setRemoteDescription(const QString &type, const QString &sdp);
 
+    void onChannelMessage(const QString &raw);
+
     Config m_config;
+    Mode   m_mode = Mode::Call;
+    bool   m_channelOpen = false;
     quintptr m_videoHandle = 0;
 
     GstElement *m_pipeline = nullptr;

@@ -172,6 +172,11 @@ void MainWindow::start() {
             this, &MainWindow::onTextReceived);
     connect(m_webrtc, &WebRtcSession::textDelivered,
             this, &MainWindow::onTextDelivered);
+    connect(m_webrtc, &WebRtcSession::channelOpen, this, [this] {
+        // A call's DataChannel also delivers queued text.
+        if (!m_webrtc->remotePeerId().isEmpty())
+            flushQueuedMessages(m_webrtc->remotePeerId());
+    });
 
     m_signaling = new SignalingClient(this);
     connect(m_signaling, &SignalingClient::connected,
@@ -217,6 +222,8 @@ void MainWindow::onPresenceChanged(const QStringList &online) {
         m_chatHeader->setContact(m_currentContact.displayName, isOnline);
         m_chatHeader->setCallEnabled(isOnline);
     }
+    // Keep silent text-delivery sessions in step with who's online.
+    syncChatSessions(online);
 }
 
 void MainWindow::onContactSelected(const QModelIndex &index) {
@@ -238,35 +245,123 @@ void MainWindow::selectContactById(const QString &id) {
     if (row >= 0) onContactSelected(m_contactsModel->index(row));
 }
 
-void MainWindow::appendMessage(const QString &peerId, const QString &senderId, const QString &text) {
+Message MainWindow::appendMessage(const QString &peerId, const QString &senderId,
+                                  const QString &text, const QString &msgId) {
     Message m;
+    m.msgId    = msgId;
     m.peerId   = peerId;
     m.senderId = senderId;
     m.text     = text;
     m.sentAt   = QDateTime::currentDateTime();
-    if (m_history) m_history->append(m);
+    // Incoming messages are "delivered" by definition; only our own
+    // outgoing ones wait for the peer's ack.
+    m.delivered = (senderId != m_config.userId);
+    if (m_history) m_history->append(m);   // fills m.msgId/rowId if empty
     if (m_currentContact.id == peerId) m_chatModel->append(m);
+    return m;
 }
 
 // --- Chat send / receive -------------------------------------------------
 
 void MainWindow::onSendText(const QString &text) {
     if (m_currentContact.id.isEmpty()) return;
-    appendMessage(m_currentContact.id, m_config.userId, text);
+    const Message m = appendMessage(m_currentContact.id, m_config.userId, text);
     if (!m_webrtc) return;  // demo mode: UI-only, no data channel
-    if (!m_webrtc->sendText(text)) {
-        statusBar()->showMessage(tr("Канал данных ещё не открыт — позвоните, чтобы установить соединение"), 4000);
+    if (!sendViaAnyChannel(m.peerId, m.msgId, m.text)) {
+        statusBar()->showMessage(
+            tr("Собеседник не в сети — сообщение будет доставлено автоматически"), 4000);
     }
 }
 
-void MainWindow::onTextReceived(const QString &fromPeerId, const QString &text) {
-    appendMessage(fromPeerId, fromPeerId, text);
+bool MainWindow::sendViaAnyChannel(const QString &peerId, const QString &msgId,
+                                   const QString &text) {
+    // Prefer the silent chat session; fall back to an active call's channel.
+    if (WebRtcSession *s = m_chatSessions.value(peerId)) {
+        if (s->isChannelOpen() && s->sendText(msgId, text)) return true;
+    }
+    if (m_webrtc && m_webrtc->remotePeerId() == peerId &&
+        m_webrtc->isChannelOpen() && m_webrtc->sendText(msgId, text))
+        return true;
+    return false;
 }
 
-void MainWindow::onTextDelivered(const QString &text) {
-    Q_UNUSED(text);
-    // TODO: match delivered text back to a row id and call m_chatModel->markDelivered.
-    // For now the bubble just keeps the single check-mark.
+void MainWindow::flushQueuedMessages(const QString &peerId) {
+    if (!m_history) return;
+    const auto queued = m_history->loadUndelivered(peerId, m_config.userId);
+    for (const Message &m : queued) {
+        if (!sendViaAnyChannel(peerId, m.msgId, m.text)) break;
+    }
+    if (!queued.isEmpty())
+        statusBar()->showMessage(tr("Отправляем недоставленные сообщения…"), 3000);
+}
+
+void MainWindow::onTextReceived(const QString &fromPeerId, const QString &msgId,
+                                const QString &text) {
+    // The sender re-sends anything unacked (e.g. our ack got lost), so
+    // duplicates are expected — drop them by msg_id.
+    if (m_history && m_history->containsMsgId(msgId)) return;
+    appendMessage(fromPeerId, fromPeerId, text, msgId);
+}
+
+void MainWindow::onTextDelivered(const QString &msgId) {
+    if (!m_history || !m_history->markDeliveredByMsgId(msgId)) return;
+    // Refresh the visible conversation so the bubble gets its check-mark.
+    if (!m_currentContact.id.isEmpty())
+        m_chatModel->setMessages(m_history->loadConversation(m_currentContact.id));
+}
+
+// --- Background chat sessions ---------------------------------------------
+
+WebRtcSession *MainWindow::ensureChatSession(const QString &peerId) {
+    if (WebRtcSession *existing = m_chatSessions.value(peerId)) return existing;
+
+    auto *s = new WebRtcSession(this, WebRtcSession::Mode::Chat);
+    s->setConfig(m_config);
+    const QString kind = QStringLiteral("chat");
+    connect(s, &WebRtcSession::localOfferReady, this,
+            [this, kind](const QString &peer, const QString &sdp) {
+                m_signaling->sendOffer(peer, sdp, kind);
+            });
+    connect(s, &WebRtcSession::localAnswerReady, this,
+            [this, kind](const QString &peer, const QString &sdp) {
+                m_signaling->sendAnswer(peer, sdp, kind);
+            });
+    connect(s, &WebRtcSession::localIceReady, this,
+            [this, kind](const QString &peer, const QString &cand,
+                         const QString &mid, int mline) {
+                m_signaling->sendIce(peer, cand, mid, mline, kind);
+            });
+    connect(s, &WebRtcSession::textReceived,  this, &MainWindow::onTextReceived);
+    connect(s, &WebRtcSession::textDelivered, this, &MainWindow::onTextDelivered);
+    connect(s, &WebRtcSession::channelOpen, this,
+            [this, peerId] { flushQueuedMessages(peerId); });
+
+    s->start();
+    m_chatSessions.insert(peerId, s);
+    return s;
+}
+
+void MainWindow::syncChatSessions(const QStringList &onlinePeers) {
+    if (!m_signaling) return;   // demo mode
+
+    // Tear down sessions to peers that went offline.
+    for (auto it = m_chatSessions.begin(); it != m_chatSessions.end();) {
+        if (!onlinePeers.contains(it.key())) {
+            it.value()->stop();
+            it.value()->deleteLater();
+            it = m_chatSessions.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    // Open sessions to peers that came online. Deterministic initiator
+    // (smaller userId offers) prevents both sides from offering at once;
+    // the other side just answers our offer.
+    for (const QString &peer : onlinePeers) {
+        if (m_config.userId < peer && !m_chatSessions.contains(peer)) {
+            ensureChatSession(peer)->startCall(peer);   // chat mode: data only
+        }
+    }
 }
 
 // --- Call lifecycle ------------------------------------------------------
@@ -293,7 +388,13 @@ void MainWindow::onStartAudioCall() {
     m_webrtc->startCall(m_currentContact.id);
 }
 
-void MainWindow::onIncomingOffer(const QString &fromPeerId, const QString &sdp) {
+void MainWindow::onIncomingOffer(const QString &fromPeerId, const QString &sdp,
+                                 const QString &kind) {
+    if (kind == QLatin1String("chat")) {
+        // Silent text-delivery session — no ringing, no call window.
+        ensureChatSession(fromPeerId)->acceptOffer(fromPeerId, sdp);
+        return;
+    }
     selectContactById(fromPeerId);
     if (!m_callWindow) {
         m_callWindow = new CallWindow();
@@ -308,15 +409,26 @@ void MainWindow::onIncomingOffer(const QString &fromPeerId, const QString &sdp) 
     m_webrtc->acceptOffer(fromPeerId, sdp);
 }
 
-void MainWindow::onIncomingAnswer(const QString &fromPeerId, const QString &sdp) {
+void MainWindow::onIncomingAnswer(const QString &fromPeerId, const QString &sdp,
+                                  const QString &kind) {
+    if (kind == QLatin1String("chat")) {
+        if (WebRtcSession *s = m_chatSessions.value(fromPeerId)) s->provideAnswer(sdp);
+        return;
+    }
     Q_UNUSED(fromPeerId);
     m_webrtc->provideAnswer(sdp);
 }
 
 void MainWindow::onIncomingIce(const QString &fromPeerId, const QString &candidate,
-                                const QString &sdpMid, int sdpMLineIndex) {
-    Q_UNUSED(fromPeerId);
+                                const QString &sdpMid, int sdpMLineIndex,
+                                const QString &kind) {
     Q_UNUSED(sdpMid);
+    if (kind == QLatin1String("chat")) {
+        if (WebRtcSession *s = m_chatSessions.value(fromPeerId))
+            s->addRemoteIce(candidate, sdpMLineIndex);
+        return;
+    }
+    Q_UNUSED(fromPeerId);
     m_webrtc->addRemoteIce(candidate, sdpMLineIndex);
 }
 

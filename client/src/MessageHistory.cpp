@@ -2,6 +2,7 @@
 
 #include <QDir>
 #include <QStandardPaths>
+#include <QUuid>
 #include <QtSql/QSqlError>
 #include <QtSql/QSqlQuery>
 
@@ -44,7 +45,37 @@ bool MessageHistory::open() {
     q.exec(QStringLiteral(
         "CREATE INDEX IF NOT EXISTS idx_messages_peer_time "
         "ON messages(peer_id, sent_at)"));
-    return migrateToEncrypted();
+    return migrateToEncrypted() && migrateAddMsgId();
+}
+
+// v2: per-message UUID used to pair delivery acks and dedup re-sends.
+bool MessageHistory::migrateAddMsgId() {
+    QSqlQuery v(m_db);
+    if (!v.exec(QStringLiteral("PRAGMA user_version")) || !v.next()) {
+        m_error = v.lastError().text();
+        return false;
+    }
+    if (v.value(0).toInt() >= 2) return true;
+
+    QSqlQuery q(m_db);
+    if (!q.exec(QStringLiteral("ALTER TABLE messages ADD COLUMN msg_id TEXT"))) {
+        m_error = q.lastError().text();
+        return false;
+    }
+    // Backfill old rows so msg_id is never NULL going forward.
+    QSqlQuery sel(m_db), upd(m_db);
+    upd.prepare(QStringLiteral("UPDATE messages SET msg_id = ? WHERE id = ?"));
+    if (sel.exec(QStringLiteral("SELECT id FROM messages WHERE msg_id IS NULL"))) {
+        while (sel.next()) {
+            upd.addBindValue(QUuid::createUuid().toString(QUuid::WithoutBraces));
+            upd.addBindValue(sel.value(0).toLongLong());
+            upd.exec();
+        }
+    }
+    q.exec(QStringLiteral(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_msg_id ON messages(msg_id)"));
+    q.exec(QStringLiteral("PRAGMA user_version = 2"));
+    return true;
 }
 
 bool MessageHistory::migrateToEncrypted() {
@@ -94,10 +125,13 @@ QString MessageHistory::decryptText(const QVariant &stored) const {
 }
 
 bool MessageHistory::append(Message &msg) {
+    if (msg.msgId.isEmpty())
+        msg.msgId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
-        "INSERT INTO messages (peer_id, sender_id, text, sent_at, delivered) "
-        "VALUES (?, ?, ?, ?, ?)"));
+        "INSERT INTO messages (msg_id, peer_id, sender_id, text, sent_at, delivered) "
+        "VALUES (?, ?, ?, ?, ?, ?)"));
+    q.addBindValue(msg.msgId);
     q.addBindValue(msg.peerId);
     q.addBindValue(msg.senderId);
     q.addBindValue(m_cipher.encrypt(msg.text));
@@ -118,6 +152,47 @@ bool MessageHistory::markDelivered(qint64 rowId) {
     return q.exec();
 }
 
+bool MessageHistory::markDeliveredByMsgId(const QString &msgId) {
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral("UPDATE messages SET delivered = 1 WHERE msg_id = ?"));
+    q.addBindValue(msgId);
+    return q.exec() && q.numRowsAffected() > 0;
+}
+
+bool MessageHistory::containsMsgId(const QString &msgId) const {
+    if (msgId.isEmpty()) return false;
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral("SELECT 1 FROM messages WHERE msg_id = ? LIMIT 1"));
+    q.addBindValue(msgId);
+    return q.exec() && q.next();
+}
+
+QVector<Message> MessageHistory::loadUndelivered(const QString &peerId,
+                                                 const QString &selfId) const {
+    QVector<Message> out;
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral(
+        "SELECT id, msg_id, peer_id, sender_id, text, sent_at, delivered "
+        "FROM messages "
+        "WHERE peer_id = ? AND sender_id = ? AND delivered = 0 "
+        "ORDER BY sent_at ASC"));
+    q.addBindValue(peerId);
+    q.addBindValue(selfId);
+    if (!q.exec()) return out;
+    while (q.next()) {
+        Message m;
+        m.rowId     = q.value(0).toLongLong();
+        m.msgId     = q.value(1).toString();
+        m.peerId    = q.value(2).toString();
+        m.senderId  = q.value(3).toString();
+        m.text      = decryptText(q.value(4));
+        m.sentAt    = QDateTime::fromMSecsSinceEpoch(q.value(5).toLongLong());
+        m.delivered = false;
+        out.append(m);
+    }
+    return out;
+}
+
 bool MessageHistory::clearAll() {
     QSqlQuery q(m_db);
     if (!q.exec(QStringLiteral("DELETE FROM messages"))) {
@@ -132,7 +207,7 @@ QVector<Message> MessageHistory::loadConversation(const QString &peerId, int lim
     QVector<Message> out;
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
-        "SELECT id, peer_id, sender_id, text, sent_at, delivered "
+        "SELECT id, msg_id, peer_id, sender_id, text, sent_at, delivered "
         "FROM messages WHERE peer_id = ? "
         "ORDER BY sent_at DESC LIMIT ?"));
     q.addBindValue(peerId);
@@ -141,11 +216,12 @@ QVector<Message> MessageHistory::loadConversation(const QString &peerId, int lim
     while (q.next()) {
         Message m;
         m.rowId     = q.value(0).toLongLong();
-        m.peerId    = q.value(1).toString();
-        m.senderId  = q.value(2).toString();
-        m.text      = decryptText(q.value(3));
-        m.sentAt    = QDateTime::fromMSecsSinceEpoch(q.value(4).toLongLong());
-        m.delivered = q.value(5).toInt() != 0;
+        m.msgId     = q.value(1).toString();
+        m.peerId    = q.value(2).toString();
+        m.senderId  = q.value(3).toString();
+        m.text      = decryptText(q.value(4));
+        m.sentAt    = QDateTime::fromMSecsSinceEpoch(q.value(5).toLongLong());
+        m.delivered = q.value(6).toInt() != 0;
         out.prepend(m); // reverse so callers get oldest-first
     }
     return out;

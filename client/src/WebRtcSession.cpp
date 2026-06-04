@@ -25,6 +25,8 @@
 #include <QDebug>
 #include <QDir>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QPointer>
 
 extern "C" {
@@ -89,7 +91,8 @@ GstWebRTCSessionDescription *makeSessionDescription(const char *type, const QByt
 
 } // namespace
 
-WebRtcSession::WebRtcSession(QObject *parent) : QObject(parent) {
+WebRtcSession::WebRtcSession(QObject *parent, Mode mode)
+    : QObject(parent), m_mode(mode) {
     ensureGstInit();
     m_busTimer.setInterval(30);
     connect(&m_busTimer, &QTimer::timeout, this, &WebRtcSession::pollBus);
@@ -120,6 +123,7 @@ void WebRtcSession::stop() {
         m_dataChannel = nullptr;
     }
     m_inCall = false;
+    m_channelOpen = false;
 }
 
 void WebRtcSession::buildPipelineIfNeeded() {
@@ -136,9 +140,34 @@ void WebRtcSession::buildPipelineIfNeeded() {
     //             bitrate is in kbps; 600 is plenty for 480p talking-head.
     //   opusenc — works on every platform; perceptual-quality variable
     //             bitrate around 32 kbps is already telephone-clear.
-    const QByteArray launch =
+    // Chat mode carries only the DataChannel: no camera, no mic, no media
+    // m-lines — the connection is silent and cheap enough to keep open in
+    // the background whenever the peer is online. Built by hand because
+    // gst_parse_launch with a single element returns the element itself,
+    // not a pipeline, and the GST_BIN lookup below would silently fail.
+    if (m_mode == Mode::Chat) {
+        m_pipeline = gst_pipeline_new("chat-session");
+        m_webrtc = gst_element_factory_make("webrtcbin", "webrtc");
+        if (!m_webrtc) {
+            emit error(QStringLiteral("webrtcbin element unavailable"));
+            gst_object_unref(m_pipeline);
+            m_pipeline = nullptr;
+            return;
+        }
+        g_object_set(m_webrtc,
+                     "bundle-policy", GST_WEBRTC_BUNDLE_POLICY_MAX_BUNDLE,
+                     "stun-server", m_config.stunUrl.toUtf8().constData(),
+                     nullptr);
+        gst_bin_add(GST_BIN(m_pipeline), m_webrtc);
+        gst_object_ref(m_webrtc);   // match the parse_launch path's get_by_name ref
+        attachWebrtcSignals();
+        return;
+    }
+
+    const QByteArray core =
         "webrtcbin name=webrtc bundle-policy=max-bundle "
-        "  stun-server=" + m_config.stunUrl.toUtf8() + " "
+        "  stun-server=" + m_config.stunUrl.toUtf8() + " ";
+    const QByteArray launch = core +
         "autovideosrc ! videoconvert ! videoscale ! "
         "  video/x-raw,width=640,height=480,framerate=30/1 ! "
         "  queue max-size-buffers=10 leaky=downstream ! "
@@ -159,7 +188,11 @@ void WebRtcSession::buildPipelineIfNeeded() {
         return;
     }
     m_webrtc = gst_bin_get_by_name(GST_BIN(m_pipeline), "webrtc");
+    attachWebrtcSignals();
+}
 
+// Shared by both pipeline shapes: TURN config + the webrtcbin signal hookups.
+void WebRtcSession::attachWebrtcSignals() {
     // TURN server, if configured. webrtcbin accepts a turn:// URI of the
     // form turn://user:pass@host:port — note that any '@' or ':' in the
     // password must be percent-encoded, but for our two-user prototype we
@@ -209,8 +242,12 @@ void WebRtcSession::startCall(const QString &peerId) {
     if (channel) attachDataChannel(channel);
 
     gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
-    // The actual create-offer happens automatically when webrtcbin fires
-    // on-negotiation-needed, so we don't kick it off here.
+    // Call mode: create-offer happens when webrtcbin fires
+    // on-negotiation-needed as the media pads link up during the PLAYING
+    // transition. Chat mode has no media — webrtcbin raised the flag once
+    // at start() (before m_isCaller was set, so we ignored it) and won't
+    // re-emit for the data channel, so kick the offer explicitly.
+    if (m_mode == Mode::Chat) onNegotiationNeeded();
 }
 
 void WebRtcSession::acceptOffer(const QString &peerId, const QString &remoteSdp) {
@@ -257,14 +294,49 @@ void WebRtcSession::hangup() {
     if (m_pipeline) gst_element_set_state(m_pipeline, GST_STATE_READY);
     m_inCall = false;
     m_dataChannel = nullptr;
+    m_channelOpen = false;
     emit callEnded();
 }
 
-bool WebRtcSession::sendText(const QString &text) {
-    if (!m_dataChannel) return false;
-    g_signal_emit_by_name(m_dataChannel, "send-string", text.toUtf8().constData());
-    emit textDelivered(text);
+bool WebRtcSession::sendText(const QString &msgId, const QString &text) {
+    if (!m_dataChannel || !m_channelOpen) return false;
+    // Structured envelope so the receiver can ack: delivery is confirmed by
+    // the peer, not assumed at send time (SCTP buffering ≠ delivered).
+    QJsonObject o;
+    o.insert(QStringLiteral("v"), 1);
+    o.insert(QStringLiteral("t"), QStringLiteral("msg"));
+    o.insert(QStringLiteral("id"), msgId);
+    o.insert(QStringLiteral("text"), text);
+    const QByteArray raw = QJsonDocument(o).toJson(QJsonDocument::Compact);
+    g_signal_emit_by_name(m_dataChannel, "send-string", raw.constData());
     return true;
+}
+
+void WebRtcSession::onChannelMessage(const QString &raw) {
+    QJsonParseError err{};
+    const auto doc = QJsonDocument::fromJson(raw.toUtf8(), &err);
+    if (err.error != QJsonParseError::NoError || !doc.isObject()) {
+        // Legacy peer (pre-ack protocol): the string is the message itself.
+        emit textReceived(m_peerId, QString(), raw);
+        return;
+    }
+    const auto o = doc.object();
+    const QString type = o.value(QStringLiteral("t")).toString();
+    const QString id   = o.value(QStringLiteral("id")).toString();
+    if (type == QLatin1String("msg")) {
+        emit textReceived(m_peerId, id, o.value(QStringLiteral("text")).toString());
+        // Confirm receipt — the sender keeps the message queued until then.
+        if (m_dataChannel && m_channelOpen && !id.isEmpty()) {
+            QJsonObject ack;
+            ack.insert(QStringLiteral("v"), 1);
+            ack.insert(QStringLiteral("t"), QStringLiteral("ack"));
+            ack.insert(QStringLiteral("id"), id);
+            const QByteArray rawAck = QJsonDocument(ack).toJson(QJsonDocument::Compact);
+            g_signal_emit_by_name(m_dataChannel, "send-string", rawAck.constData());
+        }
+    } else if (type == QLatin1String("ack")) {
+        emit textDelivered(id);
+    }
 }
 
 // --- GStreamer callbacks ------------------------------------------------
@@ -395,12 +467,18 @@ void WebRtcSession::attachDataChannel(void *channel) {
     m_dataChannel = channel;
     g_signal_connect(channel, "on-message-string",
         G_CALLBACK(+[](void *, const gchar *text, gpointer s) {
-            auto *self = static_cast<WebRtcSession *>(s);
-            emit self->textReceived(self->m_peerId, QString::fromUtf8(text));
+            static_cast<WebRtcSession *>(s)->onChannelMessage(QString::fromUtf8(text));
         }), this);
     g_signal_connect(channel, "on-open",
         G_CALLBACK(+[](void *, gpointer s) {
-            emit static_cast<WebRtcSession *>(s)->callConnected();
+            auto *self = static_cast<WebRtcSession *>(s);
+            self->m_channelOpen = true;
+            emit self->channelOpen();
+            emit self->callConnected();
+        }), this);
+    g_signal_connect(channel, "on-close",
+        G_CALLBACK(+[](void *, gpointer s) {
+            static_cast<WebRtcSession *>(s)->m_channelOpen = false;
         }), this);
 }
 

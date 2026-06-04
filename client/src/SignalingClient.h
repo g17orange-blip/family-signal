@@ -24,10 +24,17 @@ public:
     bool isConnected() const;
 
     // Send WebRTC handshake messages destined for a specific peer.
-    void sendOffer(const QString &toPeerId, const QString &sdp);
-    void sendAnswer(const QString &toPeerId, const QString &sdp);
+    // `kind` distinguishes parallel sessions to the same peer: "call" is a
+    // ringing audio/video call, "chat" is the silent text-delivery session.
+    // The server relays payloads verbatim, so no server change is needed;
+    // older clients simply ignore the extra field.
+    void sendOffer(const QString &toPeerId, const QString &sdp,
+                   const QString &kind = QStringLiteral("call"));
+    void sendAnswer(const QString &toPeerId, const QString &sdp,
+                    const QString &kind = QStringLiteral("call"));
     void sendIce(const QString &toPeerId, const QString &candidate,
-                 const QString &sdpMid, int sdpMLineIndex);
+                 const QString &sdpMid, int sdpMLineIndex,
+                 const QString &kind = QStringLiteral("call"));
     void sendBye(const QString &toPeerId);
 
 signals:
@@ -37,10 +44,14 @@ signals:
 
     void presenceChanged(const QStringList &onlinePeerIds);
 
-    void offerReceived(const QString &fromPeerId, const QString &sdp);
-    void answerReceived(const QString &fromPeerId, const QString &sdp);
+    // `kind` is "call" (default when absent) or "chat" — see sendOffer.
+    void offerReceived(const QString &fromPeerId, const QString &sdp,
+                       const QString &kind);
+    void answerReceived(const QString &fromPeerId, const QString &sdp,
+                        const QString &kind);
     void iceReceived(const QString &fromPeerId, const QString &candidate,
-                     const QString &sdpMid, int sdpMLineIndex);
+                     const QString &sdpMid, int sdpMLineIndex,
+                     const QString &kind);
     void byeReceived(const QString &fromPeerId);
 
 private slots:

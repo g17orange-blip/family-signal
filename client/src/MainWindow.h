@@ -2,7 +2,9 @@
 
 #include "Config.h"
 #include "Contact.h"
+#include "Message.h"
 
+#include <QHash>
 #include <QMainWindow>
 
 class CallWindow;
@@ -43,10 +45,13 @@ private slots:
     void onContactSelected(const QModelIndex &index);
     void onSendText(const QString &text);
 
-    void onIncomingOffer(const QString &fromPeerId, const QString &sdp);
-    void onIncomingAnswer(const QString &fromPeerId, const QString &sdp);
+    void onIncomingOffer(const QString &fromPeerId, const QString &sdp,
+                         const QString &kind);
+    void onIncomingAnswer(const QString &fromPeerId, const QString &sdp,
+                          const QString &kind);
     void onIncomingIce(const QString &fromPeerId, const QString &candidate,
-                       const QString &sdpMid, int sdpMLineIndex);
+                       const QString &sdpMid, int sdpMLineIndex,
+                       const QString &kind);
     void onIncomingBye(const QString &fromPeerId);
 
     void onLocalOffer(const QString &peerId, const QString &sdp);
@@ -57,8 +62,9 @@ private slots:
     void onCallEnded();
     void onWebRtcError(const QString &message);
 
-    void onTextReceived(const QString &fromPeerId, const QString &text);
-    void onTextDelivered(const QString &text);
+    void onTextReceived(const QString &fromPeerId, const QString &msgId,
+                        const QString &text);
+    void onTextDelivered(const QString &msgId);
 
     void onStartVideoCall();
     void onStartAudioCall();
@@ -68,13 +74,25 @@ private slots:
 
 private:
     void selectContactById(const QString &id);
-    void appendMessage(const QString &peerId, const QString &senderId, const QString &text);
+    Message appendMessage(const QString &peerId, const QString &senderId,
+                          const QString &text, const QString &msgId = QString());
     Contact currentContact() const;
+
+    // --- Background chat sessions (offline queue delivery) -----------------
+    // One silent, DataChannel-only WebRTC session per online peer. To avoid
+    // both sides offering at once, only the lexicographically smaller userId
+    // initiates. Queued (undelivered) messages flush when a channel opens.
+    WebRtcSession *ensureChatSession(const QString &peerId);
+    void syncChatSessions(const QStringList &onlinePeers);
+    void flushQueuedMessages(const QString &peerId);
+    bool sendViaAnyChannel(const QString &peerId, const QString &msgId,
+                           const QString &text);
 
     Config           m_config;
     SignalingClient *m_signaling   = nullptr;
     WebRtcSession   *m_webrtc      = nullptr;
     MessageHistory  *m_history     = nullptr;
+    QHash<QString, WebRtcSession *> m_chatSessions;   // peerId → silent session
 
     ContactsModel   *m_contactsModel = nullptr;
     ChatModel       *m_chatModel     = nullptr;

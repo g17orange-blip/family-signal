@@ -81,14 +81,20 @@ void SignalingClient::onTextMessage(const QString &message) {
         }
         emit presenceChanged(online);
     } else if (type == QStringLiteral("offer")) {
-        emit offerReceived(from, payload.value(QStringLiteral("sdp")).toString());
+        emit offerReceived(from, payload.value(QStringLiteral("sdp")).toString(),
+                           payload.value(QStringLiteral("kind"))
+                               .toString(QStringLiteral("call")));
     } else if (type == QStringLiteral("answer")) {
-        emit answerReceived(from, payload.value(QStringLiteral("sdp")).toString());
+        emit answerReceived(from, payload.value(QStringLiteral("sdp")).toString(),
+                            payload.value(QStringLiteral("kind"))
+                                .toString(QStringLiteral("call")));
     } else if (type == QStringLiteral("ice")) {
         emit iceReceived(from,
                          payload.value(QStringLiteral("candidate")).toString(),
                          payload.value(QStringLiteral("sdpMid")).toString(),
-                         payload.value(QStringLiteral("sdpMLineIndex")).toInt());
+                         payload.value(QStringLiteral("sdpMLineIndex")).toInt(),
+                         payload.value(QStringLiteral("kind"))
+                             .toString(QStringLiteral("call")));
     } else if (type == QStringLiteral("bye")) {
         emit byeReceived(from);
     } else if (type == QStringLiteral("error")) {
@@ -108,26 +114,32 @@ void SignalingClient::sendEnvelope(const QString &type, const QString &to,
     m_socket->sendTextMessage(QString::fromUtf8(QJsonDocument(env).toJson(QJsonDocument::Compact)));
 }
 
-void SignalingClient::sendOffer(const QString &toPeerId, const QString &sdp) {
+void SignalingClient::sendOffer(const QString &toPeerId, const QString &sdp,
+                                 const QString &kind) {
     QJsonObject p;
     p.insert(QStringLiteral("sdp"), sdp);
+    p.insert(QStringLiteral("kind"), kind);
     sendEnvelope(QStringLiteral("offer"), toPeerId,
                  QJsonDocument(p).toJson(QJsonDocument::Compact));
 }
 
-void SignalingClient::sendAnswer(const QString &toPeerId, const QString &sdp) {
+void SignalingClient::sendAnswer(const QString &toPeerId, const QString &sdp,
+                                  const QString &kind) {
     QJsonObject p;
     p.insert(QStringLiteral("sdp"), sdp);
+    p.insert(QStringLiteral("kind"), kind);
     sendEnvelope(QStringLiteral("answer"), toPeerId,
                  QJsonDocument(p).toJson(QJsonDocument::Compact));
 }
 
 void SignalingClient::sendIce(const QString &toPeerId, const QString &candidate,
-                               const QString &sdpMid, int sdpMLineIndex) {
+                               const QString &sdpMid, int sdpMLineIndex,
+                               const QString &kind) {
     QJsonObject p;
     p.insert(QStringLiteral("candidate"), candidate);
     p.insert(QStringLiteral("sdpMid"), sdpMid);
     p.insert(QStringLiteral("sdpMLineIndex"), sdpMLineIndex);
+    p.insert(QStringLiteral("kind"), kind);
     sendEnvelope(QStringLiteral("ice"), toPeerId,
                  QJsonDocument(p).toJson(QJsonDocument::Compact));
 }
