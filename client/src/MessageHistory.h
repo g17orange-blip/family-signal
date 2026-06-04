@@ -34,6 +34,9 @@ public:
     // Returns up to `limit` most recent messages for a conversation, oldest first.
     QVector<Message> loadConversation(const QString &peerId, int limit = 500) const;
 
+    // Irreversibly deletes every conversation (used by the settings screen).
+    bool clearAll();
+
 private:
     // One-time plaintext→encrypted rewrite, tracked via PRAGMA user_version.
     bool migrateToEncrypted();

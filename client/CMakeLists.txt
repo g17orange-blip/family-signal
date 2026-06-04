@@ -69,6 +69,8 @@ set(SOURCES
     src/CallWindow.h
     src/FirstRunDialog.cpp
     src/FirstRunDialog.h
+    src/SettingsDialog.cpp
+    src/SettingsDialog.h
     src/MainWindow.cpp
     src/MainWindow.h
 )

@@ -118,6 +118,16 @@ bool MessageHistory::markDelivered(qint64 rowId) {
     return q.exec();
 }
 
+bool MessageHistory::clearAll() {
+    QSqlQuery q(m_db);
+    if (!q.exec(QStringLiteral("DELETE FROM messages"))) {
+        m_error = q.lastError().text();
+        return false;
+    }
+    q.exec(QStringLiteral("VACUUM"));   // shrink the file so the data is really gone
+    return true;
+}
+
 QVector<Message> MessageHistory::loadConversation(const QString &peerId, int limit) const {
     QVector<Message> out;
     QSqlQuery q(m_db);

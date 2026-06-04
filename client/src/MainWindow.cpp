@@ -8,10 +8,12 @@
 #include "FirstRunDialog.h"
 #include "MessageHistory.h"
 #include "MessageInputBar.h"
+#include "SettingsDialog.h"
 #include "SignalingClient.h"
 #include "WebRtcSession.h"
 
 #include <QListView>
+#include <QMenuBar>
 #include <QMessageBox>
 #include <QSplitter>
 #include <QStatusBar>
@@ -59,6 +61,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     setCentralWidget(m_splitter);
 
     statusBar()->showMessage(tr("Не подключено"));
+
+    // Settings hide behind a menu on purpose — nothing destructive sits on
+    // the main UI where it could be pressed by accident.
+    auto *appMenu = menuBar()->addMenu(tr("Меню"));
+    appMenu->addAction(tr("Настройки…"), this, &MainWindow::onOpenSettings);
 
     connect(m_chatHeader, &ChatHeader::videoCallRequested,
             this, &MainWindow::onStartVideoCall);
@@ -346,4 +353,15 @@ void MainWindow::onHangupRequested() {
     if (!m_currentContact.id.isEmpty()) m_signaling->sendBye(m_currentContact.id);
     m_webrtc->hangup();
     if (m_callWindow) m_callWindow->hide();
+}
+
+void MainWindow::onOpenSettings() {
+    SettingsDialog dlg(&m_config, m_history, this);
+    connect(&dlg, &SettingsDialog::historyCleared, this, [this] {
+        // The store is empty now; drop what's on screen too.
+        m_chatModel->setMessages({});
+        if (!m_currentContact.id.isEmpty() && m_history)
+            m_chatModel->setMessages(m_history->loadConversation(m_currentContact.id));
+    });
+    dlg.exec();
 }

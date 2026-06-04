@@ -64,6 +64,8 @@ private slots:
     void onStartAudioCall();
     void onHangupRequested();
 
+    void onOpenSettings();
+
 private:
     void selectContactById(const QString &id);
     void appendMessage(const QString &peerId, const QString &senderId, const QString &text);
