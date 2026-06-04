@@ -28,7 +28,13 @@ public:
     void setSelfId(const QString &id) { m_selfId = id; }
     void setMessages(QVector<Message> messages);
     void append(const Message &msg);
+    // Older history paged in as the user scrolls up (oldest-first chunk).
+    void prependMessages(const QVector<Message> &older);
     void markDelivered(qint64 rowId);
+
+    // rowId of the oldest loaded message, -1 when empty — the cursor for
+    // fetching the next (older) page.
+    qint64 firstRowId() const;
 
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;
     QVariant data(const QModelIndex &index, int role) const override;

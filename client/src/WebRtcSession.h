@@ -17,7 +17,7 @@ struct _GstElement;
 typedef struct _GstElement GstElement;
 
 // One peer-to-peer voice/video/data session. Lifetime:
-//   1. Construct, attach to a video widget via setVideoWindowHandle().
+//   1. Construct; video frames arrive via the selfFrame/remoteFrame signals.
 //   2. Call start() to spin up the GStreamer pipeline (camera, mic, encoders,
 //      webrtcbin). Pipeline stays in READY state until a call is initiated
 //      or accepted.
@@ -41,9 +41,6 @@ public:
 
     void setConfig(const Config &cfg);
 
-    // Pass the platform window handle of the QWidget that should display
-    // the remote video. Must be called before remote video arrives.
-    void setVideoWindowHandle(quintptr handle);
 
     // Choose whether the next call carries camera video. Call before
     // start(); switching modes tears the previous pipeline down so the
@@ -90,9 +87,10 @@ signals:
     void callEnded();
     void error(const QString &message);
 
-    // Local camera preview frame (160x120 RGBA), emitted from a streaming
-    // thread — connect queued and paint in the UI.
-    void selfFrame(const QImage &frame);
+    // Video frames (RGBA), emitted from streaming threads — connections to
+    // UI objects are automatically queued; paint on the GUI thread.
+    void selfFrame(const QImage &frame);     // local camera preview
+    void remoteFrame(const QImage &frame);   // the peer's picture
 
     // Inbound chat message from the remote peer over the DataChannel.
     // msgId is empty for legacy plain-string messages.
@@ -137,7 +135,6 @@ private:
     bool   m_withVideo = true;  // Call mode: include the camera branch
     bool   m_channelOpen = false;
     bool   m_haveAec = false;   // webrtcdsp echo cancellation in the pipeline
-    quintptr m_videoHandle = 0;
 
     GstElement *m_pipeline = nullptr;
     GstElement *m_webrtc   = nullptr;

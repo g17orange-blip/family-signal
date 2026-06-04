@@ -19,11 +19,19 @@ ChatView::ChatView(QWidget *parent) : QListView(parent) {
 
 void ChatView::setChatModel(ChatModel *model) {
     setModel(model);
-    connect(model, &QAbstractItemModel::rowsInserted, this, [this]() {
-        // Snap to bottom after the new row is laid out.
+    connect(model, &QAbstractItemModel::rowsInserted, this,
+            [this](const QModelIndex &, int, int last) {
+        // Snap to bottom only for rows appended at the END (new messages /
+        // a freshly opened conversation). Pages of older history are
+        // prepended at the top and must not yank the viewport around.
+        if (!this->model() || last != this->model()->rowCount() - 1) return;
         QMetaObject::invokeMethod(this, [this]() {
             verticalScrollBar()->setValue(verticalScrollBar()->maximum());
         }, Qt::QueuedConnection);
+    });
+    connect(verticalScrollBar(), &QScrollBar::valueChanged, this, [this](int v) {
+        if (v <= 40 && verticalScrollBar()->maximum() > 0)
+            emit needOlderMessages();
     });
 }
 

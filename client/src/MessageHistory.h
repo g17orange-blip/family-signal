@@ -45,8 +45,11 @@ public:
     // Sender side: the peer displayed these outgoing messages.
     bool markPeerRead(const QStringList &msgIds);
 
-    // Returns up to `limit` most recent messages for a conversation, oldest first.
-    QVector<Message> loadConversation(const QString &peerId, int limit = 500) const;
+    // Returns up to `limit` messages for a conversation, oldest first.
+    // With beforeRowId >= 0 only rows older than it are returned — the
+    // chat view uses this to page history in as the user scrolls up.
+    QVector<Message> loadConversation(const QString &peerId, int limit = 50,
+                                      qint64 beforeRowId = -1) const;
 
     // Outbound messages that never got a delivery ack, oldest first —
     // the offline queue flushed when a DataChannel to the peer opens.

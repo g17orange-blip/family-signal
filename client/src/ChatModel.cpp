@@ -14,6 +14,18 @@ void ChatModel::append(const Message &msg) {
     endInsertRows();
 }
 
+void ChatModel::prependMessages(const QVector<Message> &older) {
+    if (older.isEmpty()) return;
+    beginInsertRows(QModelIndex(), 0, older.size() - 1);
+    for (int i = older.size() - 1; i >= 0; --i)
+        m_messages.prepend(older[i]);
+    endInsertRows();
+}
+
+qint64 ChatModel::firstRowId() const {
+    return m_messages.isEmpty() ? -1 : m_messages.first().rowId;
+}
+
 void ChatModel::markDelivered(qint64 rowId) {
     for (int i = 0; i < m_messages.size(); ++i) {
         if (m_messages[i].rowId == rowId) {

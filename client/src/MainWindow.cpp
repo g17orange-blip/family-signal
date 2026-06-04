@@ -17,6 +17,7 @@
 #include <QListView>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QScrollBar>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStatusBar>
@@ -92,6 +93,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
             this, &MainWindow::onStartAudioCall);
     connect(m_inputBar, &MessageInputBar::sendRequested,
             this, &MainWindow::onSendText);
+    connect(m_chatView, &ChatView::needOlderMessages,
+            this, &MainWindow::loadOlderMessages);
 
     m_chatHeader->setContact(tr("Выберите контакт"), false);
     m_chatHeader->setCallEnabled(false);
@@ -203,6 +206,10 @@ void MainWindow::start() {
         if (m_callWindow && m_callWindow->isVisible())
             m_callWindow->setSelfFrame(f);
     });
+    connect(m_webrtc, &WebRtcSession::remoteFrame, this, [this](const QImage &f) {
+        if (m_callWindow && m_callWindow->isVisible())
+            m_callWindow->setRemoteFrame(f);
+    });
     connect(m_webrtc, &WebRtcSession::channelOpen, this, [this] {
         // A call's DataChannel also delivers queued text and receipts.
         if (!m_webrtc->remotePeerId().isEmpty()) {
@@ -268,10 +275,39 @@ void MainWindow::onContactSelected(const QModelIndex &index) {
     m_chatHeader->setContact(c.displayName, c.online);
     m_chatHeader->setCallEnabled(c.online);
     m_inputBar->setEnabled(true);
+    m_olderExhausted = false;
+    m_loadingOlder = false;
     if (m_history) {
         m_chatModel->setMessages(m_history->loadConversation(c.id));
     }
     sendReadReceipts(c.id, /*markConversation=*/true);
+}
+
+void MainWindow::loadOlderMessages() {
+    if (!m_history || m_loadingOlder || m_olderExhausted ||
+        m_currentContact.id.isEmpty())
+        return;
+    const qint64 before = m_chatModel->firstRowId();
+    if (before < 0) return;
+    m_loadingOlder = true;
+
+    const auto older = m_history->loadConversation(m_currentContact.id, 50, before);
+    if (older.isEmpty()) {
+        m_olderExhausted = true;
+        m_loadingOlder = false;
+        return;
+    }
+    // Keep the viewport anchored on the message the user was looking at:
+    // remember the distance from the bottom and restore it after the rows
+    // are prepended and laid out.
+    QScrollBar *bar = m_chatView->verticalScrollBar();
+    const int fromBottom = bar->maximum() - bar->value();
+    m_chatModel->prependMessages(older);
+    QMetaObject::invokeMethod(this, [this, fromBottom] {
+        QScrollBar *bar = m_chatView->verticalScrollBar();
+        bar->setValue(bar->maximum() - fromBottom);
+        m_loadingOlder = false;
+    }, Qt::QueuedConnection);
 }
 
 Contact MainWindow::currentContact() const { return m_currentContact; }
@@ -488,7 +524,6 @@ void MainWindow::startOutgoingCall(bool withVideo) {
                            : tr("Звоним… ждём ответа"));
     w->show();
     m_webrtc->prepare(withVideo);
-    m_webrtc->setVideoWindowHandle(w->videoHandle());
     if (!m_webrtc->start()) {
         statusBar()->showMessage(tr("Не удалось запустить камеру/микрофон"), 5000);
         w->hide();
@@ -538,7 +573,6 @@ void MainWindow::onAcceptIncomingCall() {
     w->showActive();
     w->setStatus(tr("Соединяем…"));
     m_webrtc->prepare(offer.video);
-    m_webrtc->setVideoWindowHandle(w->videoHandle());
     if (!m_webrtc->start()) {
         statusBar()->showMessage(tr("Не удалось запустить камеру/микрофон"), 5000);
         w->hide();

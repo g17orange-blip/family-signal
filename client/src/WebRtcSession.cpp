@@ -103,23 +103,26 @@ QByteArray stunUri(const QString &configured) {
     return s.toUtf8();
 }
 
-// Platform-priority video sinks, all GstVideoOverlay-capable. Windows
-// first tries Direct3D 11: glimagesink needs GL shader support that older
-// GPUs/drivers (the target hardware!) often lack.
-GstElement *makeVideoSink() {
-    const char *candidates[] = {
-#ifdef Q_OS_WIN
-        "d3d11videosink", "d3dvideosink", "glimagesink",
-#elif defined(Q_OS_MACOS)
-        "glimagesink",
-#else
-        "glimagesink", "xvimagesink", "ximagesink",
-#endif
-    };
-    for (const char *c : candidates) {
-        if (GstElement *s = gst_element_factory_make(c, nullptr)) return s;
+// Copies an RGBA appsink sample into a QImage (deep copy — the buffer is
+// unmapped immediately). Returns a null image on any failure.
+QImage sampleToImage(GstSample *sample) {
+    if (!sample) return {};
+    int w = 0;
+    int h = 0;
+    if (GstCaps *caps = gst_sample_get_caps(sample)) {
+        if (const GstStructure *st = gst_caps_get_structure(caps, 0)) {
+            gst_structure_get_int(st, "width", &w);
+            gst_structure_get_int(st, "height", &h);
+        }
     }
-    return nullptr;
+    GstBuffer *buf = gst_sample_get_buffer(sample);
+    if (!buf || w <= 0 || h <= 0) return {};
+    GstMapInfo map;
+    if (!gst_buffer_map(buf, &map, GST_MAP_READ)) return {};
+    const QImage frame(map.data, w, h, w * 4, QImage::Format_RGBA8888);
+    QImage out = frame.copy();
+    gst_buffer_unmap(buf, &map);
+    return out;
 }
 
 } // namespace
@@ -216,7 +219,6 @@ WebRtcSession::~WebRtcSession() {
 }
 
 void WebRtcSession::setConfig(const Config &cfg) { m_config = cfg; }
-void WebRtcSession::setVideoWindowHandle(quintptr handle) { m_videoHandle = handle; }
 
 void WebRtcSession::prepare(bool withVideo) {
     if (m_pipeline && m_withVideo != withVideo) stop();   // rebuild on mode change
@@ -314,11 +316,12 @@ void WebRtcSession::buildPipelineIfNeeded() {
     // requested" when restacked, and compositing into the remote frame put
     // the preview under the window's control strip.
     // Width-only caps: the height follows the camera's real aspect ratio
-    // (squeezing a 16:9 sensor into 4:3 looked awful).
+    // (squeezing a 16:9 sensor into 4:3 looked awful). 320 wide so the
+    // preview stays sharp on hi-dpi screens.
     const QByteArray selfPip = m_withVideo ?
         "selftee. ! queue max-size-buffers=2 leaky=downstream ! "
         "  videoconvert ! videoscale ! "
-        "  video/x-raw,format=RGBA,width=176 ! "
+        "  video/x-raw,format=RGBA,width=320 ! "
         "  appsink name=selfsink max-buffers=1 drop=true sync=false " : "";
     const QByteArray videoBranch = m_withVideo ?
         "autovideosrc ! videoconvert ! videoscale ! "
@@ -373,26 +376,9 @@ void WebRtcSession::buildPipelineIfNeeded() {
                 auto *self = static_cast<WebRtcSession *>(s);
                 GstSample *sample = nullptr;
                 g_signal_emit_by_name(sink, "pull-sample", &sample);
-                if (!sample) return GST_FLOW_OK;
-                int w = 0;
-                int h = 0;
-                if (GstCaps *scaps = gst_sample_get_caps(sample)) {
-                    if (const GstStructure *st = gst_caps_get_structure(scaps, 0)) {
-                        gst_structure_get_int(st, "width", &w);
-                        gst_structure_get_int(st, "height", &h);
-                    }
-                }
-                GstBuffer *buf = gst_sample_get_buffer(sample);
-                if (buf && w > 0 && h > 0) {
-                    GstMapInfo map;
-                    if (gst_buffer_map(buf, &map, GST_MAP_READ)) {
-                        const QImage frame(map.data, w, h, w * 4,
-                                           QImage::Format_RGBA8888);
-                        emit self->selfFrame(frame.copy());
-                        gst_buffer_unmap(buf, &map);
-                    }
-                }
-                gst_sample_unref(sample);
+                const QImage img = sampleToImage(sample);
+                if (sample) gst_sample_unref(sample);
+                if (!img.isNull()) emit self->selfFrame(img);
                 return GST_FLOW_OK;
             }), this);
         gst_object_unref(selfsink);
@@ -659,12 +645,37 @@ void WebRtcSession::onIncomingStream(void *padPtr) {
             const gchar *name = gst_structure_get_name(str);
             GstElement *sink = nullptr;
             if (g_str_has_prefix(name, "video/")) {
-                sink = makeVideoSink();
-                if (sink && self->m_videoHandle) {
-                    gst_video_overlay_set_window_handle(
-                        GST_VIDEO_OVERLAY(sink),
-                        static_cast<guintptr>(self->m_videoHandle));
-                }
+                // Remote video also goes through appsink → QImage → QPainter.
+                // No native video surface at all: nothing to fight Qt over
+                // stacking, no GL/D3D display requirements (the grandfather's
+                // GPU already failed glimagesink once) — at 480p the copy is
+                // cheap. One rendering path on every platform.
+                GstElement *conv  = gst_element_factory_make("videoconvert", nullptr);
+                GstElement *asink = gst_element_factory_make("appsink", nullptr);
+                if (!conv || !asink) { gst_caps_unref(caps); return; }
+                GstCaps *vcaps = gst_caps_from_string("video/x-raw,format=RGBA");
+                g_object_set(asink, "caps", vcaps, "max-buffers", 2, "drop", TRUE,
+                             "emit-signals", TRUE, nullptr);
+                gst_caps_unref(vcaps);
+                g_signal_connect(asink, "new-sample",
+                    G_CALLBACK(+[](GstElement *sk, gpointer s) -> GstFlowReturn {
+                        auto *ss = static_cast<WebRtcSession *>(s);
+                        GstSample *sample = nullptr;
+                        g_signal_emit_by_name(sk, "pull-sample", &sample);
+                        const QImage img = sampleToImage(sample);
+                        if (sample) gst_sample_unref(sample);
+                        if (!img.isNull()) emit ss->remoteFrame(img);
+                        return GST_FLOW_OK;
+                    }), self);
+                gst_bin_add_many(GST_BIN(self->m_pipeline), conv, asink, nullptr);
+                gst_element_link(conv, asink);
+                gst_element_sync_state_with_parent(conv);
+                gst_element_sync_state_with_parent(asink);
+                gst_caps_unref(caps);
+                GstPad *sinkpad = gst_element_get_static_pad(conv, "sink");
+                gst_pad_link(newpad, sinkpad);
+                gst_object_unref(sinkpad);
+                return;
             } else if (g_str_has_prefix(name, "audio/")) {
                 GstElement *conv = gst_element_factory_make("audioconvert", nullptr);
                 GstElement *res  = gst_element_factory_make("audioresample", nullptr);

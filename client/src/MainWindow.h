@@ -97,6 +97,12 @@ private:
     void startOutgoingCall(bool withVideo);
     CallWindow *ensureCallWindow();
 
+    // History paging: 50 messages at a time, older pages pulled in as the
+    // user scrolls towards the top of the conversation.
+    void loadOlderMessages();
+    bool m_olderExhausted = false;   // no more rows for the current dialog
+    bool m_loadingOlder   = false;   // re-entrancy guard for scroll storms
+
     // Incoming call waiting for the user to press "Принять" — media is NOT
     // running yet. Cleared on accept/decline/bye.
     struct PendingOffer {

@@ -14,6 +14,10 @@ public:
 
     void setChatModel(ChatModel *model);
 
+signals:
+    // The user scrolled near the top — time to page older history in.
+    void needOlderMessages();
+
 protected:
     void resizeEvent(QResizeEvent *event) override;
 

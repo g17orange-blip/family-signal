@@ -15,10 +15,9 @@ class CallWindow : public QWidget {
 public:
     explicit CallWindow(QWidget *parent = nullptr);
 
-    // Native window handle of the video area. Pass to WebRtcSession.
-    quintptr videoHandle() const;
-    // Own-camera preview: feed frames here (queued from the session); the
-    // rounded overlay shows itself on the first frame.
+    // Video frames (queued from the session's streaming threads). The
+    // rounded self-view overlay shows itself on its first frame.
+    void setRemoteFrame(const QImage &frame);
     void setSelfFrame(const QImage &frame);
     void setSelfViewVisible(bool visible);
 
@@ -41,9 +40,10 @@ protected:
 private:
     void repositionSelfView();
 
-    class SelfView;   // rounded own-camera preview, painted from QImages
+    class SelfView;     // rounded own-camera preview, painted from QImages
+    class RemoteView;   // full-area peer picture, painted from QImages
 
-    QWidget     *m_videoArea;
+    RemoteView  *m_videoArea;
     SelfView    *m_selfView;
     QLabel      *m_status;
     QPushButton *m_acceptBtn;

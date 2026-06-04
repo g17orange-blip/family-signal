@@ -10,33 +10,30 @@
 #include <QVBoxLayout>
 
 // Rounded own-camera preview. Plain QPainter rendering of QImage frames —
-// no native video surface, so nothing can die underneath it and it stacks
-// above the GStreamer overlay reliably (it's a native sibling raised last).
+// since the remote picture is painted the same way (no native video
+// surfaces anywhere), ordinary widget stacking is enough to stay on top.
+// Width is a fraction of the video area; height follows the frame aspect.
 class CallWindow::SelfView : public QWidget {
 public:
-    explicit SelfView(QWidget *parent) : QWidget(parent) {
-        setAttribute(Qt::WA_NativeWindow, true);   // stack above the video view
-        setFixedSize(176, 132);
-        hide();
-    }
+    explicit SelfView(QWidget *parent) : QWidget(parent) { hide(); }
+
     void setFrame(const QImage &frame) {
         m_frame = frame;
-        // Match the camera's aspect ratio (fixed width, derived height).
-        if (!frame.isNull()) {
-            const int w = 176;
-            const int h = qMax(1, frame.height() * w / qMax(1, frame.width()));
-            if (size() != QSize(w, h)) setFixedSize(w, h);
-        }
-        if (!isVisible()) show();
-        // The remote video's native surface is created mid-call and would
-        // stack above us — keep climbing back on top.
-        raise();
+        resizeToParent();
+        if (!isVisible()) { show(); raise(); }
         update();
+    }
+    void resizeToParent() {
+        if (!parentWidget() || m_frame.isNull()) return;
+        const int w = qBound(120, int(parentWidget()->width() * 0.24), 320);
+        const int h = qMax(1, m_frame.height() * w / qMax(1, m_frame.width()));
+        if (size() != QSize(w, h)) setFixedSize(w, h);
     }
 protected:
     void paintEvent(QPaintEvent *) override {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
+        p.setRenderHint(QPainter::SmoothPixmapTransform);
         QPainterPath clip;
         clip.addRoundedRect(rect(), 14, 14);
         p.setClipPath(clip);
@@ -52,20 +49,38 @@ private:
     QImage m_frame;
 };
 
+// Full-area remote picture, aspect-fit on black, painted from QImages.
+class CallWindow::RemoteView : public QWidget {
+public:
+    explicit RemoteView(QWidget *parent) : QWidget(parent) {
+        setAutoFillBackground(false);
+    }
+    void setFrame(const QImage &frame) {
+        m_frame = frame;
+        update();
+    }
+    void clear() { m_frame = QImage(); update(); }
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter p(this);
+        p.fillRect(rect(), Qt::black);
+        if (m_frame.isNull()) return;
+        p.setRenderHint(QPainter::SmoothPixmapTransform);
+        QSize s = m_frame.size().scaled(size(), Qt::KeepAspectRatio);
+        QRect target(QPoint(0, 0), s);
+        target.moveCenter(rect().center());
+        p.drawImage(target, m_frame);
+    }
+private:
+    QImage m_frame;
+};
+
 CallWindow::CallWindow(QWidget *parent) : QWidget(parent) {
     setWindowTitle(tr("Звонок"));
     resize(720, 540);
 
-    m_videoArea = new QWidget(this);
+    m_videoArea = new RemoteView(this);
     m_videoArea->setObjectName(QStringLiteral("videoArea"));
-    // Tell Qt to give the video area its own native window so winId()
-    // returns a real platform handle that GstVideoOverlay can paint into.
-    m_videoArea->setAttribute(Qt::WA_NativeWindow, true);
-    m_videoArea->setAttribute(Qt::WA_DontCreateNativeAncestors, false);
-    m_videoArea->setAutoFillBackground(true);
-    QPalette p = m_videoArea->palette();
-    p.setColor(QPalette::Window, Qt::black);
-    m_videoArea->setPalette(p);
     m_videoArea->setMinimumSize(320, 240);
 
     // Own camera preview pinned to the bottom-right corner of the video
@@ -110,8 +125,8 @@ CallWindow::CallWindow(QWidget *parent) : QWidget(parent) {
     showActive();   // default look until told otherwise
 }
 
-quintptr CallWindow::videoHandle() const {
-    return static_cast<quintptr>(m_videoArea->winId());
+void CallWindow::setRemoteFrame(const QImage &frame) {
+    m_videoArea->setFrame(frame);
 }
 
 void CallWindow::setSelfFrame(const QImage &frame) {
@@ -129,6 +144,7 @@ void CallWindow::setSelfViewVisible(bool visible) {
 
 void CallWindow::repositionSelfView() {
     // Top-right: the bottom edge sits too close to the status/controls strip.
+    m_selfView->resizeToParent();
     const int margin = 12;
     m_selfView->move(m_videoArea->width() - m_selfView->width() - margin,
                      margin);
@@ -161,9 +177,10 @@ void CallWindow::showIncoming(const QString &peerName, bool video) {
 void CallWindow::showActive() {
     m_acceptBtn->hide();
     m_hangupBtn->setText(tr("Завершить"));
-    // The preview pops up again with the first frame of the new call;
-    // audio-only calls produce none, so it stays hidden for them.
+    // Fresh call, fresh pictures: the previews pop up with their first
+    // frames; audio-only calls produce none, so they stay dark/hidden.
     m_selfView->hide();
+    m_videoArea->clear();
 }
 
 void CallWindow::closeEvent(QCloseEvent *event) {

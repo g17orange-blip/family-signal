@@ -300,14 +300,19 @@ bool MessageHistory::clearAll() {
     return true;
 }
 
-QVector<Message> MessageHistory::loadConversation(const QString &peerId, int limit) const {
+QVector<Message> MessageHistory::loadConversation(const QString &peerId, int limit,
+                                                  qint64 beforeRowId) const {
     QVector<Message> out;
     QSqlQuery q(m_db);
+    // Ordered by id (autoincrement = true insertion order; sent_at can
+    // collide within a second).
     q.prepare(QStringLiteral(
         "SELECT id, msg_id, peer_id, sender_id, text, sent_at, delivered, read, kind "
-        "FROM messages WHERE peer_id = ? "
-        "ORDER BY sent_at DESC LIMIT ?"));
+        "FROM messages WHERE peer_id = ? AND (? < 0 OR id < ?) "
+        "ORDER BY id DESC LIMIT ?"));
     q.addBindValue(peerId);
+    q.addBindValue(beforeRowId);
+    q.addBindValue(beforeRowId);
     q.addBindValue(limit);
     if (!q.exec()) return out;
     while (q.next()) {
