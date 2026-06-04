@@ -481,6 +481,23 @@ void MainWindow::onIncomingOffer(const QString &fromPeerId, const QString &sdp,
         ensureChatSession(fromPeerId)->acceptOffer(fromPeerId, sdp);
         return;
     }
+    // Busy: an active call (or an accept screen already on display) must
+    // not be disturbed by a second caller — answer them "busy" and leave a
+    // missed-call note instead.
+    if ((m_webrtc && m_webrtc->isInCall()) || !m_pendingOffer.peerId.isEmpty()) {
+        m_signaling->sendBye(fromPeerId);
+        const int row = m_contactsModel->indexOf(fromPeerId);
+        const QString name =
+            row >= 0 ? m_contactsModel->contactAt(row).displayName : fromPeerId;
+        appendMessage(fromPeerId, fromPeerId,
+                      tr("📞 Звонил(а) вам, пока вы разговаривали"));
+        if (m_currentContact.id != fromPeerId)
+            m_contactsModel->incrementUnread(fromPeerId);
+        statusBar()->showMessage(
+            tr("%1 звонил(а), пока вы разговаривали").arg(name), 8000);
+        return;
+    }
+
     // A call: do NOT start the camera/microphone yet. Park the offer and
     // let the user decide with the green "Принять" button.
     selectContactById(fromPeerId);
@@ -530,10 +547,20 @@ void MainWindow::onIncomingIce(const QString &fromPeerId, const QString &candida
 }
 
 void MainWindow::onIncomingBye(const QString &fromPeerId) {
-    // Caller hung up while we were still deciding — drop the pending offer.
-    if (m_pendingOffer.peerId == fromPeerId) m_pendingOffer = {};
+    // Bye from someone who is NOT the active/pending call peer is just a
+    // busy-decline of OUR outgoing offer or noise — never tear down the
+    // current conversation because of it.
+    if (m_pendingOffer.peerId == fromPeerId) {   // caller gave up ringing us
+        m_pendingOffer = {};
+        if (m_callWindow) m_callWindow->hide();
+        return;
+    }
+    if (!m_webrtc || m_webrtc->remotePeerId() != fromPeerId) return;
+    const bool wasRinging = !m_webrtc->isChannelOpen();
     m_webrtc->hangup();
     if (m_callWindow) m_callWindow->hide();
+    if (wasRinging)
+        statusBar()->showMessage(tr("Занято или звонок отклонён"), 6000);
 }
 
 void MainWindow::onLocalOffer(const QString &peerId, const QString &sdp) {
