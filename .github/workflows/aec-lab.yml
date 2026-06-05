@@ -65,17 +65,22 @@ jobs:
           # Columns: label, extra arguments. -6 dB coupling = ordinary
           # speakers; 0 dB = loud; clip = cheap speakers driven to clipping
           # with the mic next to them (grandpa's setup).
+          # Sweep #1 (run 27040547518) mapped the left edge: with announced
+          # L=371ms, AEC is dead at echo delay D=30..90 (skew -340..-280),
+          # partial at 180, near-perfect at 300. This sweep maps the right
+          # edge (D > L) and simulates the planned client fix: jitterbuffer
+          # 50ms + sink buffer ~30ms bring L down to where real echo lives.
           $configs = @(
             @("control-no-aec",      "--no-aec --echo-delay-ms=90 --echo-gain-db=-6"),
-            @("delay-30",            "--echo-delay-ms=30  --echo-gain-db=-6"),
             @("delay-90",            "--echo-delay-ms=90  --echo-gain-db=-6"),
-            @("delay-180",           "--echo-delay-ms=180 --echo-gain-db=-6"),
-            @("delay-300",           "--echo-delay-ms=300 --echo-gain-db=-6"),
-            @("delay-90-render-30",  "--echo-delay-ms=90  --echo-gain-db=-6 --render-ms=30"),
-            @("loud",                "--echo-delay-ms=90  --echo-gain-db=0"),
-            @("grandpa-clip",        "--echo-delay-ms=90  --echo-gain-db=0 --clip"),
-            @("delay-90-no-agc",     "--echo-delay-ms=90  --echo-gain-db=-6 --no-agc"),
-            @("grandpa-clip-no-agc", "--echo-delay-ms=90  --echo-gain-db=0 --clip --no-agc")
+            @("delay-340",           "--echo-delay-ms=340 --echo-gain-db=-6"),
+            @("delay-420",           "--echo-delay-ms=420 --echo-gain-db=-6"),
+            @("delay-500",           "--echo-delay-ms=500 --echo-gain-db=-6"),
+            @("fix-jit50-d90",       "--jitter-ms=50 --echo-delay-ms=90 --echo-gain-db=-6"),
+            @("fix-jit50-r30-d60",   "--jitter-ms=50 --render-ms=30 --echo-delay-ms=60  --echo-gain-db=-6"),
+            @("fix-jit50-r30-d120",  "--jitter-ms=50 --render-ms=30 --echo-delay-ms=120 --echo-gain-db=-6"),
+            @("fix-jit50-r30-d200",  "--jitter-ms=50 --render-ms=30 --echo-delay-ms=200 --echo-gain-db=-6"),
+            @("fix-grandpa-clip",    "--jitter-ms=50 --render-ms=30 --echo-delay-ms=120 --echo-gain-db=0 --clip")
           )
           $summary = @()
           foreach ($c in $configs) {
