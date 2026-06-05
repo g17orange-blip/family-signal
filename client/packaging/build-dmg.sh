@@ -29,7 +29,9 @@ ARCH="$(uname -m)"   # arm64 | x86_64
 PLUGINS=(coreelements autodetect videoconvertscale audioconvert audioresample
   audiotestsrc videotestsrc app typefindfunctions playback opus rtp rtpmanager
   srtp dtls webrtc nice opengl videoparsersbad x264 vpx libav volume audiofx
-  osxaudio applemedia)
+  osxaudio applemedia
+  sctp        # DataChannels — webrtcbin's _have_sctp_elements fails without it
+  audiomixer) # amix in the AEC playback chain (unused until brew gets webrtcdsp)
 
 echo "==> Building"
 cmake -B "$BUILD_DIR" -S client -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_PREFIX"
