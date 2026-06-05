@@ -338,7 +338,10 @@ void MainWindow::logCallEvent(const QString &peerId, const QString &text, bool b
     m.read      = true;
     if (m_history) m_history->append(m);
     if (m_currentContact.id == peerId) m_chatModel->append(m);
-    else m_contactsModel->incrementUnread(peerId);
+    // The red badge is for calls that need the user's attention: missed,
+    // declined, dropped. A call that actually took place was "read" by
+    // definition — its duration pill must not light the contact up.
+    else if (bad) m_contactsModel->incrementUnread(peerId);
 }
 
 Message MainWindow::appendMessage(const QString &peerId, const QString &senderId,
@@ -601,10 +604,11 @@ void MainWindow::onIncomingOffer(const QString &fromPeerId, const QString &sdp,
     if (resumesDroppedCall || resumesActiveCall) {
         if (resumesActiveCall) m_webrtc->hangup();
         m_autoAcceptPeer.clear();
-        selectContactById(fromPeerId);
+        const int row = m_contactsModel->indexOf(fromPeerId);
         m_pendingOffer = {fromPeerId, sdp, kind != QLatin1String("call-audio")};
         CallWindow *w = ensureCallWindow();
-        w->setPeerName(m_currentContact.displayName);
+        w->setPeerName(row >= 0 ? m_contactsModel->contactAt(row).displayName
+                                : fromPeerId);
         w->showActive();
         w->setStatus(tr("Восстанавливаем связь…"));
         w->show();
@@ -647,8 +651,9 @@ void MainWindow::onAcceptIncomingCall() {
     m_ringtone->stop();
     const PendingOffer offer = m_pendingOffer;
     m_pendingOffer = {};
-    // Now that the call is actually happening, bring its conversation up.
-    selectContactById(offer.peerId);
+    // The main window deliberately stays on whatever conversation was open
+    // before the call — the call lives in its own window, and after hangup
+    // the user continues reading where they left off.
     m_activeCallPeer = offer.peerId;
     m_activeCallVideo = offer.video;
     m_callConnectedAt = QDateTime();
@@ -760,8 +765,8 @@ void MainWindow::onWebRtcError(const QString &message) {
     // leaving a zombie call that blocks every following attempt.
     if (m_callWindow && m_callWindow->isVisible()) {
         m_callWindow->setStatus(tr("Ошибка: %1").arg(message));
-        if (!m_currentContact.id.isEmpty() && m_signaling)
-            m_signaling->sendBye(m_currentContact.id);
+        const QString peer = m_webrtc->remotePeerId();
+        if (!peer.isEmpty() && m_signaling) m_signaling->sendBye(peer);
         m_webrtc->hangup();
     }
 }
@@ -846,6 +851,12 @@ void MainWindow::onHangupRequested() {
         if (m_callWindow) m_callWindow->hide();
         return;
     }
+    // Tell the CALL peer we hung up — not whoever's conversation happens to
+    // be open in the main window (they can differ now that incoming calls
+    // no longer switch the dialog).
+    const QString byePeer = !m_activeCallPeer.isEmpty()
+        ? m_activeCallPeer
+        : (m_webrtc ? m_webrtc->remotePeerId() : QString());
     if (!m_activeCallPeer.isEmpty()) {
         const QString what = m_activeCallVideo ? tr("Видеозвонок") : tr("Звонок");
         if (m_callConnectedAt.isValid()) {
@@ -858,7 +869,7 @@ void MainWindow::onHangupRequested() {
         }
         m_activeCallPeer.clear();
     }
-    if (!m_currentContact.id.isEmpty()) m_signaling->sendBye(m_currentContact.id);
+    if (!byePeer.isEmpty()) m_signaling->sendBye(byePeer);
     m_webrtc->hangup();
     if (m_callWindow) m_callWindow->hide();
 }
