@@ -220,20 +220,22 @@ client's `user_id` matches the other's `peers[].id`.
 
 ---
 
-## Status — v0.2.0
+## Status — v0.3.0
 
 Tested end-to-end (macOS ↔ Windows) against a live server:
 
 - ✅ Text messaging without calls (background DataChannel sessions),
   offline queue with delivery acks and read receipts, history encrypted
   at rest, paginated conversations.
-- ✅ Voice and video calls with accept/decline, self-view, echo
-  cancellation (Windows/Linux), busy handling, call log pills in the chat.
+- ✅ Voice and video calls with accept/decline, ringtone, self-view, echo
+  cancellation (Windows/Linux), busy handling, call log pills in the chat
+  with unread badges for missed/declined calls.
 - ✅ Unstable-network resilience: Opus inband FEC + video NACK/RTX,
   lip-sync (RTCP latency handling), "connection lost" status with
   automatic redial and silent re-accept after a dropped call.
 - ✅ One-command server install, invite-code onboarding, prebuilt
-  installers for Windows/macOS/Linux.
+  installers for Windows/macOS/Linux (macOS bundle fixed in 0.3.0 —
+  earlier dmgs shipped a broken GStreamer relocation).
 
-Planned next (v0.3.0): photo/video sending over the same encrypted
+Planned next (v0.4.0): photo/video sending over the same encrypted
 DataChannel; macOS echo cancellation; remote peer public-key pinning.
