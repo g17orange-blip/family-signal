@@ -234,7 +234,7 @@ Tested end-to-end (macOS ↔ Windows) against a live server:
   lip-sync (RTCP latency handling), "connection lost" status with
   automatic redial and silent re-accept after a dropped call.
 - ✅ One-command server install, invite-code onboarding, prebuilt
-  installers for Windows/macOS/Linux (macOS bundle fixed in 0.3.0 —
+  installers for Windows/macOS/Linux (macOS bundle fixed in 0.3.1 —
   earlier dmgs shipped a broken GStreamer relocation).
 
 Planned next (v0.4.0): photo/video sending over the same encrypted
