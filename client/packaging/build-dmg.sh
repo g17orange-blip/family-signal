@@ -54,13 +54,24 @@ for p in "${PLUGINS[@]}"; do
     echo "   ! skipping missing plugin: $p"
   fi
 done
-# The out-of-process plugin scanner, next to the executable.
-cp -L "$GST_PREFIX/libexec/gstreamer-1.0/gst-plugin-scanner" \
-      "$APP/Contents/MacOS/" 2>/dev/null || true
+# The out-of-process plugin scanner, next to the executable. It must go
+# through dylibbundler below like the plugins do — as shipped by Homebrew it
+# links /opt/homebrew/... by absolute path.
+if cp -L "$GST_PREFIX/libexec/gstreamer-1.0/gst-plugin-scanner" \
+      "$APP/Contents/MacOS/" 2>/dev/null; then
+  fix_args+=(-x "$APP/Contents/MacOS/gst-plugin-scanner")
+fi
 
-echo "==> Relocating plugin dependencies (dylibbundler)"
+echo "==> Relocating plugin + scanner dependencies (dylibbundler)"
+# Everything must resolve ONE copy of the GStreamer stack — the one
+# macdeployqt already placed in Contents/Frameworks for the app binary.
+# The previous layout gave the plugins their own copy in Contents/libs (and
+# left the scanner on its absolute Homebrew paths): two libgstreamer copies
+# in one process register every GLib type twice, the plugin scan segfaults
+# on each plugin, GStreamer blacklists them all, and the app ends up with no
+# camera/microphone at all (hit on the spb mac with v0.2.0).
 dylibbundler -cd -of -b \
-  -d "$APP/Contents/libs" -p @executable_path/../libs \
+  -d "$APP/Contents/Frameworks" -p @executable_path/../Frameworks \
   "${fix_args[@]}"
 
 # dylibbundler rewrites install names, which invalidates the linker's ad-hoc
