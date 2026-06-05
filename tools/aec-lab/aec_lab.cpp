@@ -56,6 +56,11 @@ struct Options {
     int    jitterMs     = 200;   // rtpjitterbuffer latency, as in the client
     int    renderMs     = 100;   // announced "speaker" device latency
     int    echoDelayMs  = 90;    // actual render-path delay D
+    int    probeShiftMs = 0;     // move the probe to a tee branch and shift
+                                 // its timestamps earlier by this much —
+                                 // artificially enlarges the echo delay the
+                                 // dsp perceives (sweeps #1/#2: ERLE tracks
+                                 // D, dead <100ms, full ≥300ms)
     double echoGainDb   = -6.0;  // speaker→mic coupling strength
     bool   clip         = false; // grandpa mode: speakers driven into clipping
     bool   agc          = true;  // webrtcdsp gain-control
@@ -142,6 +147,7 @@ bool parseArgs(int argc, char **argv, Options *o) {
         if (intArg("--jitter-ms", &o->jitterMs)) continue;
         if (intArg("--render-ms", &o->renderMs)) continue;
         if (intArg("--echo-delay-ms", &o->echoDelayMs)) continue;
+        if (intArg("--probe-shift-ms", &o->probeShiftMs)) continue;
         if (strncmp(a, "--echo-gain-db=", 15) == 0) { o->echoGainDb = atof(a + 15); continue; }
         if (strcmp(a, "--clip") == 0)   { o->clip = true; continue; }
         if (strcmp(a, "--no-agc") == 0) { o->agc = false; continue; }
@@ -183,6 +189,17 @@ int main(int argc, char **argv) {
         probeDesc = "identity name=echoprobe";
     }
 
+    // With --probe-shift-ms the probe moves out of the playback line onto
+    // its own tee branch, where its timestamps can be shifted earlier
+    // without affecting what (or when) the speakers play.
+    std::string probeInline = probeDesc + " ! ";
+    std::string probeBranch;
+    if (opt.probeShiftMs > 0) {
+        probeInline.clear();
+        probeBranch = "spk. ! queue name=probeq ! " + probeDesc +
+                      " ! fakesink sync=false ";
+    }
+
     char desc[4096];
     snprintf(desc, sizeof desc,
         // Far end: voice → the same opus/jitterbuffer leg a real call has,
@@ -193,7 +210,8 @@ int main(int argc, char **argv) {
         "  rtpjitterbuffer latency=%d ! rtpopusdepay ! opusdec ! "
         "  audioconvert ! audioresample ! %s ! "
         "  audiomixer name=amix ! %s ! "
-        "  %s ! tee name=spk "
+        "  %stee name=spk "
+        "%s"
         // The client keeps the playback side prerolled with a silent live
         // source; mirror that.
         "audiotestsrc is-live=true wave=silence ! %s ! amix. "
@@ -208,8 +226,8 @@ int main(int argc, char **argv) {
         "  audiomixer name=mic ! %s ! %s ! "
         "  fakesink name=uplink sync=false "
         "audiotestsrc is-live=true wave=silence ! %s ! mic. ",
-        caps, opt.jitterMs, caps, caps, probeDesc.c_str(), caps, caps,
-        dspDesc.c_str(), caps);
+        caps, opt.jitterMs, caps, caps, probeInline.c_str(),
+        probeBranch.c_str(), caps, caps, dspDesc.c_str(), caps);
 
     GError *err = nullptr;
     GstElement *pipeline = gst_parse_launch(desc, &err);
@@ -251,6 +269,16 @@ int main(int argc, char **argv) {
         gst_pad_set_offset(src, gint64(opt.echoDelayMs) * GST_MSECOND);
         gst_object_unref(src);
         gst_object_unref(gain);
+    }
+    // Probe shift: relabel the probe's copy of the render signal as having
+    // played earlier — the dsp then sees the echo at D+shift instead of D.
+    if (opt.probeShiftMs > 0) {
+        if (GstElement *q = byName("probeq")) {
+            GstPad *src = gst_element_get_static_pad(q, "src");
+            gst_pad_set_offset(src, -gint64(opt.probeShiftMs) * GST_MSECOND);
+            gst_object_unref(src);
+            gst_object_unref(q);
+        }
     }
     // RMS meters around the dsp.
     if (GstElement *dsp = byName("dsp")) {
