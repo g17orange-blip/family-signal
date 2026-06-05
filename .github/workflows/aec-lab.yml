@@ -1,0 +1,85 @@
+# Echo-cancellation lab: sweeps webrtcdsp effectiveness (tools/aec-lab) on a
+# Windows runner with the exact GStreamer release the family installers
+# bundle. Manual trigger only — this is a measurement rig, not a release job.
+name: aec-lab
+
+on:
+  workflow_dispatch:
+
+env:
+  GST_VERSION: "1.26.11"
+
+jobs:
+  aec-lab:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install pkg-config
+        run: choco install --no-progress pkgconfiglite
+
+      # Same install steps as release.yml so the plugin binaries match what
+      # the family actually runs.
+      - name: Install GStreamer (runtime + devel)
+        shell: pwsh
+        run: |
+          $base = "https://gstreamer.freedesktop.org/data/pkg/windows/$env:GST_VERSION/msvc"
+          foreach ($pkg in @("gstreamer-1.0-msvc-x86_64", "gstreamer-1.0-devel-msvc-x86_64")) {
+            $msi = "$env:RUNNER_TEMP\$pkg.msi"
+            Invoke-WebRequest "$base/$pkg-$env:GST_VERSION.msi" -OutFile $msi
+            Start-Process msiexec.exe -Wait -ArgumentList "/i `"$msi`" /qn ADDLOCAL=ALL"
+          }
+          $root = [Environment]::GetEnvironmentVariable('GSTREAMER_1_0_ROOT_MSVC_X86_64', 'Machine')
+          if (-not $root) {
+            $root = @("C:\gstreamer\1.0\msvc_x86_64", "$env:ProgramFiles\gstreamer\1.0\msvc_x86_64") |
+              Where-Object { Test-Path "$_\lib\pkgconfig\gstreamer-1.0.pc" } | Select-Object -First 1
+          }
+          $root = "$root".TrimEnd('\')
+          if (-not $root -or -not (Test-Path "$root\lib\pkgconfig\gstreamer-1.0.pc")) {
+            throw "GStreamer devel files missing after MSI install"
+          }
+          "GSTREAMER_ROOT=$root"                | Out-File $env:GITHUB_ENV -Append
+          "PKG_CONFIG_PATH=$root\lib\pkgconfig" | Out-File $env:GITHUB_ENV -Append
+          "$root\bin"                           | Out-File $env:GITHUB_PATH -Append
+
+      - name: Build
+        shell: pwsh
+        run: |
+          cmake -B build-lab -S tools/aec-lab -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-lab
+
+      - name: Sweep
+        shell: pwsh
+        run: |
+          $exe = "build-lab\aec-lab.exe"
+          # Columns: label, extra arguments. -6 dB coupling = ordinary
+          # speakers; 0 dB = loud; clip = cheap speakers driven to clipping
+          # with the mic next to them (grandpa's setup).
+          $configs = @(
+            @("control-no-aec",      "--no-aec --echo-delay-ms=90 --echo-gain-db=-6"),
+            @("delay-30",            "--echo-delay-ms=30  --echo-gain-db=-6"),
+            @("delay-90",            "--echo-delay-ms=90  --echo-gain-db=-6"),
+            @("delay-180",           "--echo-delay-ms=180 --echo-gain-db=-6"),
+            @("delay-300",           "--echo-delay-ms=300 --echo-gain-db=-6"),
+            @("delay-90-render-30",  "--echo-delay-ms=90  --echo-gain-db=-6 --render-ms=30"),
+            @("loud",                "--echo-delay-ms=90  --echo-gain-db=0"),
+            @("grandpa-clip",        "--echo-delay-ms=90  --echo-gain-db=0 --clip"),
+            @("delay-90-no-agc",     "--echo-delay-ms=90  --echo-gain-db=-6 --no-agc"),
+            @("grandpa-clip-no-agc", "--echo-delay-ms=90  --echo-gain-db=0 --clip --no-agc")
+          )
+          $summary = @()
+          foreach ($c in $configs) {
+            $label = $c[0]; $cliArgs = $c[1] -split ' +'
+            Write-Host "`n===== $label ====="
+            $out = & $exe --duration=20 @cliArgs 2>&1 | Out-String
+            Write-Host $out
+            if ($LASTEXITCODE -ne 0) { throw "run '$label' failed" }
+            $steady = ($out -split "`n" | Select-String '^STEADY').Line
+            $latency = ($out -split "`n" | Select-String '^LATENCY').Line
+            $summary += "{0,-22} {1}  {2}" -f $label, $steady, $latency
+          }
+          Write-Host "`n===== SUMMARY ====="
+          $summary | ForEach-Object { Write-Host $_ }

@@ -66,8 +66,12 @@ void install() {
     // GStreamer warnings/errors to their own file — must be set before
     // gst_init. Respect an explicit GST_DEBUG from the environment so a
     // deeper trace can still be requested by hand.
+    // webrtcdsp/webrtcechoprobe at DEBUG: echo cancellation only logs rare
+    // events there (the latency/delay estimate, format changes, disconts) —
+    // exactly what's needed to see whether AEC converges on a family
+    // machine, at no meaningful log volume.
     if (qEnvironmentVariableIsEmpty("GST_DEBUG"))
-        qputenv("GST_DEBUG", "2");   // errors + warnings
+        qputenv("GST_DEBUG", "2,webrtcdsp:4,webrtcechoprobe:4");
     if (qEnvironmentVariableIsEmpty("GST_DEBUG_FILE"))
         qputenv("GST_DEBUG_FILE",
                 QDir(dir).filePath(QStringLiteral("gstreamer.log")).toUtf8());

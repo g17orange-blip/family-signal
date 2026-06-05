@@ -329,6 +329,9 @@ void WebRtcSession::buildPipelineIfNeeded() {
               "  noise-suppression=true gain-control=true ! ";
         m_haveAec = true;
     }
+    // Loud and clear in the log: echo trouble reports start with this line.
+    qInfo() << "[call] echo cancellation (webrtcdsp):"
+            << (m_haveAec ? "active" : "NOT AVAILABLE — plugin missing");
 
     const QByteArray core =
         "webrtcbin name=webrtc bundle-policy=max-bundle "
