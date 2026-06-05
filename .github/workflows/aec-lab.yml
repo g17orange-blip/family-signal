@@ -5,6 +5,13 @@ name: aec-lab
 
 on:
   workflow_dispatch:
+  # Push-trigger scoped to the lab itself: dispatching by API needs a token
+  # round-trip, while every iteration on the rig naturally touches these
+  # paths anyway.
+  push:
+    paths:
+      - "tools/aec-lab/**"
+      - ".github/workflows/aec-lab.yml"
 
 env:
   GST_VERSION: "1.26.11"
