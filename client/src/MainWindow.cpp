@@ -9,6 +9,7 @@
 #include "FirstRunDialog.h"
 #include "MessageHistory.h"
 #include "MessageInputBar.h"
+#include "Ringtone.h"
 #include "SettingsDialog.h"
 #include "SignalingClient.h"
 #include "WebRtcSession.h"
@@ -30,6 +31,8 @@
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     setWindowTitle(tr("Signal"));
     resize(1100, 720);
+
+    m_ringtone = new Ringtone(this);
 
     // --- Left pane: contacts list ----------------------------------------
     m_contactsModel = new ContactsModel(this);
@@ -625,17 +628,27 @@ void MainWindow::onIncomingOffer(const QString &fromPeerId, const QString &sdp,
     }
 
     // A call: do NOT start the camera/microphone yet. Park the offer and
-    // let the user decide with the green "Принять" button.
-    selectContactById(fromPeerId);
+    // let the user decide with the green "Принять" button. The conversation
+    // on the main window deliberately does NOT switch to the caller: if the
+    // call goes unanswered, the user stays in whatever dialog they were
+    // reading and the missed-call pill shows up as a red badge on the
+    // caller's contact instead (logCallEvent bumps unread for non-current
+    // peers). Switching happens on accept.
+    const int callerRow = m_contactsModel->indexOf(fromPeerId);
+    const QString callerName = callerRow >= 0
+        ? m_contactsModel->contactAt(callerRow).displayName : fromPeerId;
     m_pendingOffer = {fromPeerId, sdp, kind != QLatin1String("call-audio")};
-    ensureCallWindow()->showIncoming(m_currentContact.displayName,
-                                     m_pendingOffer.video);
+    ensureCallWindow()->showIncoming(callerName, m_pendingOffer.video);
+    m_ringtone->start();
 }
 
 void MainWindow::onAcceptIncomingCall() {
     if (m_pendingOffer.peerId.isEmpty() || !m_webrtc) return;
+    m_ringtone->stop();
     const PendingOffer offer = m_pendingOffer;
     m_pendingOffer = {};
+    // Now that the call is actually happening, bring its conversation up.
+    selectContactById(offer.peerId);
     m_activeCallPeer = offer.peerId;
     m_activeCallVideo = offer.video;
     m_callConnectedAt = QDateTime();
@@ -683,6 +696,7 @@ void MainWindow::onIncomingBye(const QString &fromPeerId) {
     // busy-decline of OUR outgoing offer or noise — never tear down the
     // current conversation because of it.
     if (m_pendingOffer.peerId == fromPeerId) {   // caller gave up ringing us
+        m_ringtone->stop();
         logCallEvent(fromPeerId,
                      m_pendingOffer.video ? tr("Пропущенный видеозвонок")
                                           : tr("Пропущенный звонок"), /*bad=*/true);
@@ -823,6 +837,7 @@ void MainWindow::onHangupRequested() {
     m_redialAttempts = 3;
     if (!m_pendingOffer.peerId.isEmpty()) {
         // Declining an incoming call we never accepted — media never started.
+        m_ringtone->stop();
         m_signaling->sendBye(m_pendingOffer.peerId);
         logCallEvent(m_pendingOffer.peerId,
                      m_pendingOffer.video ? tr("Видеозвонок отклонён")

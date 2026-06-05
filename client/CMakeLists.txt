@@ -71,6 +71,8 @@ set(SOURCES
     src/MessageInputBar.h
     src/CallWindow.cpp
     src/CallWindow.h
+    src/Ringtone.cpp
+    src/Ringtone.h
     src/FirstRunDialog.cpp
     src/FirstRunDialog.h
     src/SettingsDialog.cpp

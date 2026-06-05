@@ -14,6 +14,7 @@ class ChatView;
 class ContactsModel;
 class MessageHistory;
 class MessageInputBar;
+class Ringtone;
 class QListView;
 class QSplitter;
 class QStackedWidget;
@@ -137,6 +138,8 @@ private:
 
     ContactsModel   *m_contactsModel = nullptr;
     ChatModel       *m_chatModel     = nullptr;
+
+    Ringtone        *m_ringtone     = nullptr;
 
     QSplitter       *m_splitter     = nullptr;
     QStackedWidget  *m_rightStack   = nullptr;
