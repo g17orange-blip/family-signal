@@ -113,6 +113,25 @@ QByteArray stunUri(const QString &configured) {
     return s.toUtf8();
 }
 
+// Shrinks the device-side audio buffering of an autoaudiosink/autoaudiosrc
+// once the platform element appears inside the auto-bin. The 200 ms
+// GstAudioBaseSink/Src default adds round-trip conversation latency for no
+// benefit at our bitrates; 60 ms is still six device periods — safe even on
+// the family's old hardware. (The sink reports whatever it actually uses in
+// the latency query, so this does not skew the echo probe's timing model —
+// see the webrtcbin latency comment in buildPipeline.)
+void tightenAudioBuffering(GstElement *autoBin) {
+    if (!autoBin) return;
+    g_signal_connect(autoBin, "element-added",
+        G_CALLBACK(+[](GstBin *, GstElement *child, gpointer) {
+            GObjectClass *k = G_OBJECT_GET_CLASS(child);
+            if (g_object_class_find_property(k, "buffer-time") &&
+                g_object_class_find_property(k, "latency-time"))
+                g_object_set(child, "buffer-time", gint64(60000),
+                             "latency-time", gint64(10000), nullptr);
+        }), nullptr);
+}
+
 // Copies an RGBA appsink sample into a QImage (deep copy — the buffer is
 // unmapped immediately). Returns a null image on any failure.
 QImage sampleToImage(GstSample *sample) {
@@ -333,8 +352,12 @@ void WebRtcSession::buildPipelineIfNeeded() {
     qInfo() << "[call] echo cancellation (webrtcdsp):"
             << (m_haveAec ? "active" : "NOT AVAILABLE — plugin missing");
 
+    // latency=100 (default 200): with the AEC delay budget moved to an
+    // explicit post-probe queue (see aecPlayback below), the jitterbuffer
+    // no longer needs to be deep — 100 ms still covers one RTX round trip
+    // on family RTTs and shaves a tenth of a second off every word.
     const QByteArray core =
-        "webrtcbin name=webrtc bundle-policy=max-bundle "
+        "webrtcbin name=webrtc bundle-policy=max-bundle latency=100 "
         "  stun-server=" + stunUri(m_config.stunUrl) + " ";
     // Audio-only calls skip the whole camera branch — the camera LED never
     // lights up and the SDP carries no video m-line.
@@ -373,19 +396,37 @@ void WebRtcSession::buildPipelineIfNeeded() {
     // chain: leaving the mixer and probe to negotiate freely ends in
     // "not-negotiated" on Windows. Convert/resample AFTER the probe adapts
     // to whatever the actual audio sink wants.
+    //
+    // The queue after the probe is the echo canceller's working principle,
+    // not an accident. webrtcdsp correlates the mic signal against the most
+    // recent samples the probe has seen, so the only delay it can actually
+    // absorb is the real wall-clock lag between "audio passed the probe"
+    // and "its echo re-entered the mic". The aec-lab sweeps (tools/aec-lab,
+    // CI runs 27040547518/27041243832/27041635720) measured cancellation as
+    // a function of that lag: none below ~100 ms, a weak ~22 dB plateau
+    // around 200 ms — and a solid 66+ dB once the lag exceeds ~300 ms,
+    // regardless of announced pipeline latency. A speaker right next to the
+    // microphone produces a lag of barely 25 ms, hopelessly inside the dead
+    // zone (hence the family echo reports). So: hold playback for 350 ms
+    // after the probe (timestamp offset set in code below) — the speakers
+    // play late, the echo arrives late, and the canceller finally sees it
+    // where it works best. Voice latency cost is ~150 ms net (the
+    // jitterbuffer above gave 100 back), well worth an echo-free call.
     const QByteArray aecPlayback = m_haveAec ?
         "audiotestsrc wave=silence is-live=true ! "
         "  audio/x-raw,format=S16LE,rate=48000,channels=1 ! "
         "  audiomixer name=amix ! "
         "  audio/x-raw,format=S16LE,rate=48000,channels=1 ! "
         "  webrtcechoprobe name=echoprobe ! "
-        "  audioconvert ! audioresample ! autoaudiosink " : "";
+        "  queue name=aecdelay max-size-time=800000000 "
+        "    max-size-buffers=0 max-size-bytes=0 ! "
+        "  audioconvert ! audioresample ! autoaudiosink name=audiosink " : "";
     // inband-fec: Opus packs a low-quality copy of the previous frame into
     // each packet, so the decoder reconstructs single lost packets instead
     // of glitching — voice survives the unstable links in the family.
     // packet-loss-percentage steers how much bitrate goes to redundancy.
     const QByteArray launch = core + videoBranch +
-        "autoaudiosrc ! audioconvert ! audioresample ! " + aec +
+        "autoaudiosrc name=audiosrc ! audioconvert ! audioresample ! " + aec +
         "  queue max-size-buffers=10 leaky=downstream ! "
         "  opusenc bitrate=32000 inband-fec=true packet-loss-percentage=20 ! "
         "  rtpopuspay pt=111 ! "
@@ -400,6 +441,28 @@ void WebRtcSession::buildPipelineIfNeeded() {
         return;
     }
     m_webrtc = gst_bin_get_by_name(GST_BIN(m_pipeline), "webrtc");
+
+    // Device buffering: both auto-bins instantiate their real element on
+    // the way to PLAYING; hook them now (see tightenAudioBuffering).
+    if (GstElement *e = gst_bin_get_by_name(GST_BIN(m_pipeline), "audiosrc")) {
+        tightenAudioBuffering(e);
+        gst_object_unref(e);
+    }
+    if (GstElement *e = gst_bin_get_by_name(GST_BIN(m_pipeline), "audiosink")) {
+        tightenAudioBuffering(e);
+        gst_object_unref(e);
+    }
+    // The AEC playback hold: relabel everything downstream of the probe
+    // 350 ms into the future. The sink simply waits for the new timestamps
+    // (never "late", so nothing gets clipped) while the queue holds the
+    // audio in flight. See the aecPlayback comment for why this is what
+    // makes webrtcdsp actually cancel speaker echo.
+    if (GstElement *q = gst_bin_get_by_name(GST_BIN(m_pipeline), "aecdelay")) {
+        GstPad *src = gst_element_get_static_pad(q, "src");
+        gst_pad_set_offset(src, 350 * GST_MSECOND);
+        gst_object_unref(src);
+        gst_object_unref(q);
+    }
 
     // Pump self-view frames to the UI. The appsink callback fires on a
     // streaming thread; QImage is implicitly shared, and the queued signal
@@ -835,6 +898,7 @@ void WebRtcSession::onIncomingStream(void *padPtr) {
                 } else {
                     GstElement *out = gst_element_factory_make("autoaudiosink", nullptr);
                     if (!out) return;
+                    tightenAudioBuffering(out);
                     gst_bin_add(GST_BIN(self->m_pipeline), out);
                     gst_element_link(res, out);
                     gst_element_sync_state_with_parent(out);

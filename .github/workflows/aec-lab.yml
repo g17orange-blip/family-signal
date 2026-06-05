@@ -89,7 +89,12 @@ jobs:
             Write-Host "`n===== $label ====="
             $out = & $exe --duration=20 @cliArgs 2>&1 | Out-String
             Write-Host $out
-            if ($LASTEXITCODE -ne 0) { throw "run '$label' failed" }
+            if ($LASTEXITCODE -ne 0) {
+                # The tool's watchdog exits with 3 on a stalled pipeline —
+                # record it and keep sweeping instead of losing the run.
+                $summary += "{0,-22} FAILED exit={1}" -f $label, $LASTEXITCODE
+                continue
+            }
             $steady = ($out -split "`n" | Select-String '^STEADY').Line
             $latency = ($out -split "`n" | Select-String '^LATENCY').Line
             $summary += "{0,-22} {1}  {2}" -f $label, $steady, $latency

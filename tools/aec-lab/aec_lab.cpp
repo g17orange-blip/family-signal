@@ -41,12 +41,15 @@
 #include <gst/gst.h>
 
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -163,6 +166,17 @@ bool parseArgs(int argc, char **argv, Options *o) {
 int main(int argc, char **argv) {
     Options opt;
     if (!parseArgs(argc, argv, &opt)) return 2;
+
+    // Watchdog: a stalled pipeline (or a shutdown deadlock) must not eat a
+    // CI sweep — exit hard with a distinct code so the harness can mark
+    // the config as hung and move on.
+    std::thread([d = opt.durationSec] {
+        std::this_thread::sleep_for(std::chrono::seconds(d + 30));
+        fprintf(stderr, "WATCHDOG: run exceeded duration+30s, aborting\n");
+        fflush(nullptr);
+        _Exit(3);
+    }).detach();
+
     gst_init(nullptr, nullptr);
 
     // Degrade to identity where the plugin is unavailable so the harness
