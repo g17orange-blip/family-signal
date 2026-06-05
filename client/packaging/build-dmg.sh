@@ -4,7 +4,7 @@
 # macos-dmg job in .github/workflows/release.yml). Run on macOS with Qt,
 # GStreamer and dylibbundler installed via Homebrew:
 #
-#   brew install cmake qt gstreamer dylibbundler
+#   brew install cmake qt gstreamer libnice-gstreamer dylibbundler
 #   bash client/packaging/build-dmg.sh
 #   # -> build/signal-macos-<arch>.dmg
 #
@@ -47,15 +47,35 @@ echo "==> Bundling GStreamer plugins"
 # for an ad-hoc-signed app (notarization would object, but we don't notarize).
 PLUGDIR="$APP/Contents/Resources/gstreamer-1.0"
 mkdir -p "$PLUGDIR"
+# Plugins live in more than one formula: the gstreamer formula's own dir
+# (which also symlinks some externals in) and libnice-gstreamer's libexec —
+# the `nice` plugin (ICE transport, nicesrc/nicesink) ships ONLY there.
+PLUGIN_DIRS=("$GST_PREFIX/lib/gstreamer-1.0")
+LIBNICE_PREFIX="$(brew --prefix libnice-gstreamer 2>/dev/null || true)"
+[ -n "$LIBNICE_PREFIX" ] && PLUGIN_DIRS+=("$LIBNICE_PREFIX/libexec/gstreamer-1.0")
 fix_args=()
+missing=""
 for p in "${PLUGINS[@]}"; do
-  src="$GST_PREFIX/lib/gstreamer-1.0/libgst$p.dylib"
-  if cp -L "$src" "$PLUGDIR/" 2>/dev/null; then
+  src=""
+  for d in "${PLUGIN_DIRS[@]}"; do
+    if [ -f "$d/libgst$p.dylib" ]; then src="$d/libgst$p.dylib"; break; fi
+  done
+  if [ -n "$src" ]; then
+    cp -L "$src" "$PLUGDIR/"
     fix_args+=(-x "$PLUGDIR/libgst$p.dylib")
   else
-    echo "   ! skipping missing plugin: $p"
+    missing="$missing $p"
   fi
 done
+# Every plugin in the curated list is load-bearing. A silent skip already
+# shipped two broken dmgs (v0.2.0 without sctp on the dev box, v0.3.0
+# without nice on CI — no ICE, no calls at all). Fail loudly instead.
+if [ -n "$missing" ]; then
+  echo "ERROR: required GStreamer plugins not found:$missing" >&2
+  echo "       'nice' comes from the libnice-gstreamer formula:" >&2
+  echo "       brew install libnice-gstreamer" >&2
+  exit 1
+fi
 # The out-of-process plugin scanner, next to the executable. It must go
 # through dylibbundler below like the plugins do — as shipped by Homebrew it
 # links /opt/homebrew/... by absolute path.
