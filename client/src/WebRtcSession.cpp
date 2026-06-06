@@ -321,7 +321,10 @@ void WebRtcSession::buildPipelineIfNeeded() {
                      "bundle-policy", GST_WEBRTC_BUNDLE_POLICY_MAX_BUNDLE,
                      "stun-server", stunUri(m_config.stunUrl).constData(),
                      nullptr);
-        if (qEnvironmentVariableIsSet("SIGNAL_FORCE_RELAY"))
+        // Same relay-only policy as the call pipeline (see buildPipeline);
+        // chat sessions suffered the identical CGNAT lottery.
+        if (!m_config.turn.url.isEmpty() && !m_config.turn.username.isEmpty()
+            && !qEnvironmentVariableIsSet("SIGNAL_ICE_ALL"))
             g_object_set(m_webrtc, "ice-transport-policy", 1 /*relay*/,
                          nullptr);
         gst_bin_add(GST_BIN(m_pipeline), m_webrtc);
@@ -360,11 +363,20 @@ void WebRtcSession::buildPipelineIfNeeded() {
     // shallow jitterbuffer: webrtcdsp only cares about the real lag
     // between the probe and the mic (see aecPlayback).
     //
-    // SIGNAL_FORCE_RELAY=1 confines ICE to TURN-relayed candidates: lets a
-    // same-LAN pair of test machines exercise the exact network path a
-    // real remote call takes (diagnosing the family's WAN-only drops).
-    const QByteArray relay = qEnvironmentVariableIsSet("SIGNAL_FORCE_RELAY")
-        ? "ice-transport-policy=relay " : "";
+    // Relay-only ICE whenever TURN is configured. Field pattern (06-06):
+    // with one family member behind a carrier-grade NAT (Tiraspol ISP),
+    // direct/srflx pairs connect only by luck — caller-dependent, a couple
+    // of dropped attempts before one sticks, endless redial loops. Their
+    // NAT rewrites ports per destination, so the STUN-derived candidates
+    // are lies; relay↔relay pairs are immune to all of that and connected
+    // instantly in the forced-relay experiment. Media stays DTLS-encrypted
+    // end-to-end — the relay sees ciphertext only — and one video call is
+    // ~2.5 Mbit/s through the VPS, well within its budget. SIGNAL_ICE_ALL=1
+    // restores normal candidate gathering for experiments.
+    const bool relayOnly = !m_config.turn.url.isEmpty() &&
+                           !m_config.turn.username.isEmpty() &&
+                           !qEnvironmentVariableIsSet("SIGNAL_ICE_ALL");
+    const QByteArray relay = relayOnly ? "ice-transport-policy=relay " : "";
     const QByteArray core =
         "webrtcbin name=webrtc bundle-policy=max-bundle " + relay +
         "  stun-server=" + stunUri(m_config.stunUrl) + " ";
