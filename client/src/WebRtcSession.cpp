@@ -289,6 +289,7 @@ void WebRtcSession::stop() {
         }
         m_duckGain = 1.0;
         m_duckLastLoudNs = -1;
+        m_duckLoudRun = 0;
         gst_object_unref(m_pipeline);
         m_pipeline = nullptr;
         m_webrtc = nullptr;
@@ -334,6 +335,9 @@ void WebRtcSession::buildPipelineIfNeeded() {
                      "bundle-policy", GST_WEBRTC_BUNDLE_POLICY_MAX_BUNDLE,
                      "stun-server", stunUri(m_config.stunUrl).constData(),
                      nullptr);
+        if (qEnvironmentVariableIsSet("SIGNAL_FORCE_RELAY"))
+            g_object_set(m_webrtc, "ice-transport-policy", 1 /*relay*/,
+                         nullptr);
         gst_bin_add(GST_BIN(m_pipeline), m_webrtc);
         gst_object_ref(m_webrtc);   // match the parse_launch path's get_by_name ref
         attachWebrtcSignals();
@@ -365,8 +369,14 @@ void WebRtcSession::buildPipelineIfNeeded() {
     // explicit post-probe queue (see aecPlayback below), the jitterbuffer
     // no longer needs to be deep — 100 ms still covers one RTX round trip
     // on family RTTs and shaves a tenth of a second off every word.
+    //
+    // SIGNAL_FORCE_RELAY=1 confines ICE to TURN-relayed candidates: lets a
+    // same-LAN pair of test machines exercise the exact network path a
+    // real remote call takes (diagnosing the family's WAN-only drops).
+    const QByteArray relay = qEnvironmentVariableIsSet("SIGNAL_FORCE_RELAY")
+        ? "ice-transport-policy=relay " : "";
     const QByteArray core =
-        "webrtcbin name=webrtc bundle-policy=max-bundle latency=100 "
+        "webrtcbin name=webrtc bundle-policy=max-bundle latency=100 " + relay +
         "  stun-server=" + stunUri(m_config.stunUrl) + " ";
     // Audio-only calls skip the whole camera branch — the camera LED never
     // lights up and the SDP carries no video m-line.
@@ -806,6 +816,15 @@ void WebRtcSession::onIceCandidate(unsigned mlineIndex, const QString &candidate
 }
 
 void WebRtcSession::onIceStateChanged(int state) {
+    // Always in the log: the family's "endless redial" reports are
+    // impossible to diagnose without the exact ICE transition timeline.
+    static const char *kIceNames[] = {"new", "checking", "connected",
+                                      "completed", "failed", "disconnected",
+                                      "closed"};
+    qInfo() << "[ice]" << (m_mode == Mode::Chat ? "chat" : "call")
+            << "connection state:"
+            << (state >= 0 && state <= 6 ? kIceNames[state] : "?")
+            << "peer" << m_peerId;
     if (!m_inCall) return;
     switch (static_cast<GstWebRTCICEConnectionState>(state)) {
     case GST_WEBRTC_ICE_CONNECTION_STATE_DISCONNECTED:
@@ -991,18 +1010,30 @@ void WebRtcSession::attachDuckProbe(void *pad) {
             gst_buffer_unmap(buf, &map);
             if (n == 0) return GST_PAD_PROBE_OK;
 
-            constexpr double kLoudRms = 32768.0 * 0.01;       // -40 dBFS
-            constexpr double kDuckGain = 0.2;                 // ~-14 dB
-            constexpr qint64 kHangNs  = 400 * GST_MSECOND;
+            // Field-tuned (first cut chopped speech): only sustained,
+            // clearly-audible remote speech ducks the mic — a -30 dBFS
+            // threshold ignores comfort noise and echo residue, and a
+            // single loud 10 ms buffer (a click, a packet artifact) is
+            // not enough, it takes ~40 ms in a row. The duck itself is a
+            // polite -10 dB, not a gate.
+            constexpr double kLoudRms  = 32768.0 * 0.0316;    // -30 dBFS
+            constexpr double kDuckGain = 0.3;                 // ~-10 dB
+            constexpr qint64 kHangNs   = 250 * GST_MSECOND;
+            constexpr int    kEngageRun = 4;                  // ~40 ms loud
 
             const qint64 pts = qint64(GST_BUFFER_PTS(buf));
-            if (std::sqrt(sum / n) > kLoudRms) self->m_duckLastLoudNs = pts;
+            if (std::sqrt(sum / n) > kLoudRms) {
+                if (++self->m_duckLoudRun >= kEngageRun)
+                    self->m_duckLastLoudNs = pts;
+            } else {
+                self->m_duckLoudRun = 0;
+            }
 
             const bool duck = self->m_duckLastLoudNs >= 0 &&
                               pts - self->m_duckLastLoudNs <= kHangNs;
             const double target = duck ? kDuckGain : 1.0;
             double &g = self->m_duckGain;
-            if (target < g) g = target;                       // attack: instant
+            if (target < g) g += (target - g) * 0.5;          // attack: ~20 ms
             else            g += (target - g) * 0.08;         // release: ~250 ms
             g_object_set(self->m_duckVolume, "volume", g, nullptr);
             return GST_PAD_PROBE_OK;

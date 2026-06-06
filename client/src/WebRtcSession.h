@@ -160,6 +160,7 @@ private:
     GstElement *m_duckVolume = nullptr;
     double      m_duckGain = 1.0;
     qint64      m_duckLastLoudNs = -1;
+    int         m_duckLoudRun = 0;   // consecutive loud buffers (~10 ms each)
 
     QString m_peerId;
     bool    m_inCall = false;
