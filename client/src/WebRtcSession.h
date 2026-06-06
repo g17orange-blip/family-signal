@@ -140,6 +140,7 @@ private:
     void buildPipelineIfNeeded();
     void attachWebrtcSignals();
     void setRemoteDescription(const QString &type, const QString &sdp);
+    void attachDuckProbe(void *pad);  // GstPad*: playback loudness → mic duck
 
     void onChannelMessage(const QString &raw);
 
@@ -152,6 +153,13 @@ private:
     GstElement *m_pipeline = nullptr;
     GstElement *m_webrtc   = nullptr;
     void       *m_dataChannel = nullptr; // GstWebRTCDataChannel*
+
+    // Auto-ducking (see the duck comment in buildPipelineIfNeeded).
+    // m_duckGain / m_duckLastLoudNs are touched only on the playback
+    // streaming thread inside the pad probe.
+    GstElement *m_duckVolume = nullptr;
+    double      m_duckGain = 1.0;
+    qint64      m_duckLastLoudNs = -1;
 
     QString m_peerId;
     bool    m_inCall = false;

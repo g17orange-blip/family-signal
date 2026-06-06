@@ -30,6 +30,9 @@
 #include <QJsonObject>
 #include <QPointer>
 
+#include <cmath>
+#include <cstdint>
+
 extern "C" {
 #include <gst/gst.h>
 #include <gst/sdp/sdp.h>
@@ -280,6 +283,12 @@ void WebRtcSession::stop() {
     m_busTimer.stop();
     if (m_pipeline) {
         gst_element_set_state(m_pipeline, GST_STATE_NULL);
+        if (m_duckVolume) {
+            gst_object_unref(m_duckVolume);
+            m_duckVolume = nullptr;
+        }
+        m_duckGain = 1.0;
+        m_duckLastLoudNs = -1;
         gst_object_unref(m_pipeline);
         m_pipeline = nullptr;
         m_webrtc = nullptr;
@@ -425,8 +434,19 @@ void WebRtcSession::buildPipelineIfNeeded() {
     // each packet, so the decoder reconstructs single lost packets instead
     // of glitching — voice survives the unstable links in the family.
     // packet-loss-percentage steers how much bitrate goes to redundancy.
+    // volume name=duck — auto-ducking, the second line of defence behind
+    // AEC. Field test on the Windows laptop (speakers at max): the 350 ms
+    // playback hold took the echo down ~80%, but speakers driven into
+    // distortion return a nonlinear echo a linear canceller cannot fully
+    // subtract, and AGC then drags the residue back up. So while the peer
+    // is talking, the mic is attenuated by ~14 dB (pad probe on the
+    // playback path drives this element); the residue lands below
+    // audibility. Cost: talking over each other gets harder — for this
+    // family (grandpa, speakers at max because of his hearing) the right
+    // trade.
     const QByteArray launch = core + videoBranch +
         "autoaudiosrc name=audiosrc ! audioconvert ! audioresample ! " + aec +
+        "  volume name=duck ! "
         "  queue max-size-buffers=10 leaky=downstream ! "
         "  opusenc bitrate=32000 inband-fec=true packet-loss-percentage=20 ! "
         "  rtpopuspay pt=111 ! "
@@ -462,6 +482,19 @@ void WebRtcSession::buildPipelineIfNeeded() {
         gst_pad_set_offset(src, 350 * GST_MSECOND);
         gst_object_unref(src);
         gst_object_unref(q);
+    }
+    // Ducking sidechain. The mic attenuator lives in the send chain; the
+    // loudness detector taps the playback mix (with AEC its mixer carries
+    // every remote stream; without AEC the probe attaches per incoming
+    // stream in onIncomingStream instead).
+    m_duckVolume = gst_bin_get_by_name(GST_BIN(m_pipeline), "duck");
+    if (m_haveAec) {
+        if (GstElement *amix = gst_bin_get_by_name(GST_BIN(m_pipeline), "amix")) {
+            GstPad *src = gst_element_get_static_pad(amix, "src");
+            attachDuckProbe(src);
+            gst_object_unref(src);
+            gst_object_unref(amix);
+        }
     }
 
     // Pump self-view frames to the UI. The appsink callback fires on a
@@ -869,6 +902,12 @@ void WebRtcSession::onIncomingStream(void *padPtr) {
                 GstElement *conv = gst_element_factory_make("audioconvert", nullptr);
                 GstElement *res  = gst_element_factory_make("audioresample", nullptr);
                 if (!conv || !res) return;
+                // Without AEC there is no playback mixer to tap — feed the
+                // ducking detector from this stream directly (opusdec
+                // hands us S16, which is what the probe expects). With AEC
+                // the detector already sits on the mixer; don't add a
+                // second driver for the same volume element.
+                if (!self->m_haveAec) self->attachDuckProbe(newpad);
                 gst_bin_add_many(GST_BIN(self->m_pipeline), conv, res, nullptr);
                 gst_element_link(conv, res);
 
@@ -925,6 +964,49 @@ void WebRtcSession::onIncomingStream(void *padPtr) {
     GstPad *sinkpad = gst_element_get_static_pad(decodebin, "sink");
     gst_pad_link(pad, sinkpad);
     gst_object_unref(sinkpad);
+}
+
+// Listens to the playback path and drives the "duck" volume in the send
+// chain: remote speech above ~-40 dBFS → mic instantly down to -14 dB;
+// 400 ms after the peer goes quiet the gain glides back to unity (instant
+// attack / slow release — the classic sidechain shape, so the duck never
+// "pumps"). Runs on the playback streaming thread; the volume element is
+// safe to poke from there, and m_duckGain/m_duckLastLoudNs are touched
+// nowhere else. Audio here is S16 by construction (the AEC mixer is caps-
+// pinned, opusdec emits S16) — anything else is left alone.
+void WebRtcSession::attachDuckProbe(void *pad) {
+    gst_pad_add_probe(static_cast<GstPad *>(pad), GST_PAD_PROBE_TYPE_BUFFER,
+        +[](GstPad *, GstPadProbeInfo *info, gpointer s) -> GstPadProbeReturn {
+            auto *self = static_cast<WebRtcSession *>(s);
+            if (!self->m_duckVolume) return GST_PAD_PROBE_OK;
+            GstBuffer *buf = GST_PAD_PROBE_INFO_BUFFER(info);
+            if (!buf || !GST_BUFFER_PTS_IS_VALID(buf)) return GST_PAD_PROBE_OK;
+
+            GstMapInfo map;
+            if (!gst_buffer_map(buf, &map, GST_MAP_READ)) return GST_PAD_PROBE_OK;
+            const int16_t *p = reinterpret_cast<const int16_t *>(map.data);
+            const size_t n = map.size / sizeof(int16_t);
+            double sum = 0.0;
+            for (size_t i = 0; i < n; ++i) sum += double(p[i]) * double(p[i]);
+            gst_buffer_unmap(buf, &map);
+            if (n == 0) return GST_PAD_PROBE_OK;
+
+            constexpr double kLoudRms = 32768.0 * 0.01;       // -40 dBFS
+            constexpr double kDuckGain = 0.2;                 // ~-14 dB
+            constexpr qint64 kHangNs  = 400 * GST_MSECOND;
+
+            const qint64 pts = qint64(GST_BUFFER_PTS(buf));
+            if (std::sqrt(sum / n) > kLoudRms) self->m_duckLastLoudNs = pts;
+
+            const bool duck = self->m_duckLastLoudNs >= 0 &&
+                              pts - self->m_duckLastLoudNs <= kHangNs;
+            const double target = duck ? kDuckGain : 1.0;
+            double &g = self->m_duckGain;
+            if (target < g) g = target;                       // attack: instant
+            else            g += (target - g) * 0.08;         // release: ~250 ms
+            g_object_set(self->m_duckVolume, "volume", g, nullptr);
+            return GST_PAD_PROBE_OK;
+        }, this, nullptr);
 }
 
 void WebRtcSession::onDataChannelCb(GstElement *, void *channel, gpointer self) {
