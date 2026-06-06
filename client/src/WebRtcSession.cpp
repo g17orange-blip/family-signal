@@ -116,24 +116,10 @@ QByteArray stunUri(const QString &configured) {
     return s.toUtf8();
 }
 
-// Shrinks the device-side audio buffering of an autoaudiosink/autoaudiosrc
-// once the platform element appears inside the auto-bin. The 200 ms
-// GstAudioBaseSink/Src default adds round-trip conversation latency for no
-// benefit at our bitrates; 60 ms is still six device periods — safe even on
-// the family's old hardware. (The sink reports whatever it actually uses in
-// the latency query, so this does not skew the echo probe's timing model —
-// see the webrtcbin latency comment in buildPipeline.)
-void tightenAudioBuffering(GstElement *autoBin) {
-    if (!autoBin) return;
-    g_signal_connect(autoBin, "element-added",
-        G_CALLBACK(+[](GstBin *, GstElement *child, gpointer) {
-            GObjectClass *k = G_OBJECT_GET_CLASS(child);
-            if (g_object_class_find_property(k, "buffer-time") &&
-                g_object_class_find_property(k, "latency-time"))
-                g_object_set(child, "buffer-time", gint64(60000),
-                             "latency-time", gint64(10000), nullptr);
-        }), nullptr);
-}
+// (v0.3.2/0.3.3 shrank the device buffers to 60 ms here; reverted — an
+// audio sink whose max latency sits below the jitterbuffer's min produces
+// an illegal latency configuration: "did not really configure latency" +
+// empty RTCP in the field logs. The defaults are correct.)
 
 // Copies an RGBA appsink sample into a QImage (deep copy — the buffer is
 // unmapped immediately). Returns a null image on any failure.
@@ -365,10 +351,14 @@ void WebRtcSession::buildPipelineIfNeeded() {
     qInfo() << "[call] echo cancellation (webrtcdsp):"
             << (m_haveAec ? "active" : "NOT AVAILABLE — plugin missing");
 
-    // latency=100 (default 200): with the AEC delay budget moved to an
-    // explicit post-probe queue (see aecPlayback below), the jitterbuffer
-    // no longer needs to be deep — 100 ms still covers one RTX round trip
-    // on family RTTs and shaves a tenth of a second off every word.
+    // Jitterbuffer at the 200 ms default. The brief latency=100 experiment
+    // (v0.3.2/0.3.3) made the pipeline's min latency exceed the audio
+    // sink's max — an illegal latency configuration ("did not really
+    // configure latency", empty RTCP in the field logs) — and 100 ms is
+    // also below the ~109 ms TURN-relay RTT, killing RTX retransmission
+    // exactly on the links that need it. The echo fix never needed a
+    // shallow jitterbuffer: webrtcdsp only cares about the real lag
+    // between the probe and the mic (see aecPlayback).
     //
     // SIGNAL_FORCE_RELAY=1 confines ICE to TURN-relayed candidates: lets a
     // same-LAN pair of test machines exercise the exact network path a
@@ -376,7 +366,7 @@ void WebRtcSession::buildPipelineIfNeeded() {
     const QByteArray relay = qEnvironmentVariableIsSet("SIGNAL_FORCE_RELAY")
         ? "ice-transport-policy=relay " : "";
     const QByteArray core =
-        "webrtcbin name=webrtc bundle-policy=max-bundle latency=100 " + relay +
+        "webrtcbin name=webrtc bundle-policy=max-bundle " + relay +
         "  stun-server=" + stunUri(m_config.stunUrl) + " ";
     // Audio-only calls skip the whole camera branch — the camera LED never
     // lights up and the SDP carries no video m-line.
@@ -472,16 +462,6 @@ void WebRtcSession::buildPipelineIfNeeded() {
     }
     m_webrtc = gst_bin_get_by_name(GST_BIN(m_pipeline), "webrtc");
 
-    // Device buffering: both auto-bins instantiate their real element on
-    // the way to PLAYING; hook them now (see tightenAudioBuffering).
-    if (GstElement *e = gst_bin_get_by_name(GST_BIN(m_pipeline), "audiosrc")) {
-        tightenAudioBuffering(e);
-        gst_object_unref(e);
-    }
-    if (GstElement *e = gst_bin_get_by_name(GST_BIN(m_pipeline), "audiosink")) {
-        tightenAudioBuffering(e);
-        gst_object_unref(e);
-    }
     // The AEC playback hold: relabel everything downstream of the probe
     // 350 ms into the future. The sink simply waits for the new timestamps
     // (never "late", so nothing gets clipped) while the queue holds the
@@ -956,7 +936,6 @@ void WebRtcSession::onIncomingStream(void *padPtr) {
                 } else {
                     GstElement *out = gst_element_factory_make("autoaudiosink", nullptr);
                     if (!out) return;
-                    tightenAudioBuffering(out);
                     gst_bin_add(GST_BIN(self->m_pipeline), out);
                     gst_element_link(res, out);
                     gst_element_sync_state_with_parent(out);
