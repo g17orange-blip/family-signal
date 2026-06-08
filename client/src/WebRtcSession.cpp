@@ -523,24 +523,55 @@ void WebRtcSession::buildPipelineIfNeeded() {
 
 // Shared by both pipeline shapes: TURN config + the webrtcbin signal hookups.
 void WebRtcSession::attachWebrtcSignals() {
-    // TURN server, if configured. webrtcbin accepts a turn:// URI of the
-    // form turn://user:pass@host:port — note that any '@' or ':' in the
-    // password must be percent-encoded, but for our two-user prototype we
-    // generate the password ourselves and avoid such characters.
+    // TURN server, if configured. webrtcbin accepts turn(s)://user:pass@host:port
+    // URIs (any '@' or ':' in the password would need percent-encoding, but
+    // we generate passwords ourselves and avoid those characters).
+    //
+    // We register the SAME relay over several transports — UDP, TCP, and TLS
+    // — on purpose. With relay-only ICE a call otherwise has a single
+    // relay↔relay UDP candidate pair; one lost STUN check on it stalls the
+    // whole connection for ICE's full retransmission window (~8 s) and then
+    // fails, with no second pair to fall back on (the field "fails at exactly
+    // 8 s, instant on retry" symptom). The TCP/TLS relays add independent,
+    // reliable-transport candidate pairs, so a dropped UDP packet no longer
+    // means a dead call. coturn already listens on 3478 (UDP+TCP) and 5349
+    // (TLS). The TLS entry is best-effort: if the cert/port isn't reachable
+    // it simply yields no candidate.
     if (!m_config.turn.url.isEmpty() && !m_config.turn.username.isEmpty()) {
-        // Preserve the scheme: a turns: URL (TLS relay on 5349) must stay
-        // turns://, not be mangled into turn://. Strip the scheme prefix
-        // (and optional //) and re-emit it explicitly.
         QString hostPort = m_config.turn.url;
-        const bool tls = hostPort.startsWith(QStringLiteral("turns:"));
-        hostPort.remove(0, hostPort.indexOf(QLatin1Char(':')) + 1);
+        hostPort.remove(0, hostPort.indexOf(QLatin1Char(':')) + 1);   // drop turn(s): prefix
         if (hostPort.startsWith(QStringLiteral("//"))) hostPort.remove(0, 2);
-        const QString turnUri = QStringLiteral("%1://%2:%3@%4")
-            .arg(tls ? QStringLiteral("turns") : QStringLiteral("turn"),
-                 m_config.turn.username, m_config.turn.password, hostPort);
-        gboolean ok = FALSE;
-        g_signal_emit_by_name(m_webrtc, "add-turn-server", turnUri.toUtf8().constData(), &ok);
-        if (!ok) qWarning() << "webrtcbin rejected TURN URI" << turnUri;
+        const int colon = hostPort.lastIndexOf(QLatin1Char(':'));
+        const QString host = colon > 0 ? hostPort.left(colon) : hostPort;
+        const QString basePort = colon > 0 ? hostPort.mid(colon + 1)
+                                           : QStringLiteral("3478");
+
+        const QString user = m_config.turn.username;
+        const QString pass = m_config.turn.password;
+        auto addTurn = [&](const QString &scheme, const QString &port,
+                           const QString &transport) {
+            QString uri = QStringLiteral("%1://%2:%3@%4:%5")
+                .arg(scheme, user, pass, host, port);
+            if (!transport.isEmpty())
+                uri += QStringLiteral("?transport=%1").arg(transport);
+            gboolean ok = FALSE;
+            g_signal_emit_by_name(m_webrtc, "add-turn-server",
+                                  uri.toUtf8().constData(), &ok);
+            if (!ok) qWarning() << "webrtcbin rejected TURN URI for" << scheme
+                                << transport;
+        };
+
+        const bool tls = m_config.turn.url.startsWith(QStringLiteral("turns:"));
+        if (tls) {
+            // Configured as TLS already — keep it, plus a plain-UDP fallback.
+            addTurn(QStringLiteral("turns"), basePort, QStringLiteral("tcp"));
+            addTurn(QStringLiteral("turn"), QStringLiteral("3478"), QString());
+        } else {
+            addTurn(QStringLiteral("turn"),  basePort, QString());            // UDP
+            addTurn(QStringLiteral("turn"),  basePort, QStringLiteral("tcp")); // TCP
+            addTurn(QStringLiteral("turns"), QStringLiteral("5349"),
+                    QStringLiteral("tcp"));                                    // TLS
+        }
     }
 
     g_signal_connect(m_webrtc, "on-negotiation-needed",
