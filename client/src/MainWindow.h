@@ -100,6 +100,10 @@ private:
 
     void startOutgoingCall(bool withVideo);
     CallWindow *ensureCallWindow();
+    // Bring the call window up / take it (and the header's in-call state)
+    // down together, so the two never disagree.
+    void showCallUi();
+    void hideCallUi();
 
     // History paging: 50 messages at a time, older pages pulled in as the
     // user scrolls towards the top of the conversation.

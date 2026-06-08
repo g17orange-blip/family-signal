@@ -76,6 +76,12 @@ private:
 };
 
 CallWindow::CallWindow(QWidget *parent) : QWidget(parent) {
+    // A top-level window despite having a parent: the parent is the main
+    // window so macOS keeps this window with the app (an orphaned secondary
+    // window can disappear behind other apps with no way to get it back),
+    // but Qt::Window makes it its own resizable/maximizable frame, not an
+    // embedded child widget.
+    setWindowFlag(Qt::Window);
     setWindowTitle(tr("Звонок"));
     resize(720, 540);
 

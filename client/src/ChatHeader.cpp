@@ -40,14 +40,27 @@ ChatHeader::ChatHeader(QWidget *parent) : QWidget(parent) {
     m_audioBtn->setEnabled(false);
     m_videoBtn->setEnabled(false);
 
+    // Hang-up that lives in the header too, so the call is always endable
+    // even when its own window is off-screen or buried.
+    m_hangupBtn = new QToolButton(this);
+    m_hangupBtn->setText(tr("✕ Завершить"));
+    m_hangupBtn->setToolTip(tr("Завершить текущий звонок"));
+    m_hangupBtn->setStyleSheet(QStringLiteral(
+        "QToolButton { background: #E54545; color: white; border: none;"
+        "              border-radius: 16px; padding: 7px 16px; font-weight: 700; }"
+        "QToolButton:hover { background: #FF5050; }"));
+    m_hangupBtn->hide();
+
     connect(m_audioBtn, &QToolButton::clicked, this, &ChatHeader::audioCallRequested);
     connect(m_videoBtn, &QToolButton::clicked, this, &ChatHeader::videoCallRequested);
+    connect(m_hangupBtn, &QToolButton::clicked, this, &ChatHeader::hangupRequested);
 
     auto *row = new QHBoxLayout(this);
     row->setContentsMargins(16, 8, 12, 8);
     row->addLayout(names, 1);
     row->addWidget(m_audioBtn);
     row->addWidget(m_videoBtn);
+    row->addWidget(m_hangupBtn);
 }
 
 void ChatHeader::setContact(const QString &displayName, bool online) {
@@ -59,6 +72,21 @@ void ChatHeader::setContact(const QString &displayName, bool online) {
 }
 
 void ChatHeader::setCallEnabled(bool enabled) {
-    m_audioBtn->setEnabled(enabled);
-    m_videoBtn->setEnabled(enabled);
+    m_callEnabled = enabled;
+    refreshButtons();
+}
+
+void ChatHeader::setInCall(bool inCall) {
+    m_inCall = inCall;
+    refreshButtons();
+}
+
+void ChatHeader::refreshButtons() {
+    // In a call only the hang-up shows; otherwise the two call buttons,
+    // enabled only when the open contact is reachable.
+    m_hangupBtn->setVisible(m_inCall);
+    m_audioBtn->setVisible(!m_inCall);
+    m_videoBtn->setVisible(!m_inCall);
+    m_audioBtn->setEnabled(m_callEnabled);
+    m_videoBtn->setEnabled(m_callEnabled);
 }

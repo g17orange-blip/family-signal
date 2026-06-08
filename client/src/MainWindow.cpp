@@ -95,6 +95,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
             this, &MainWindow::onStartVideoCall);
     connect(m_chatHeader, &ChatHeader::audioCallRequested,
             this, &MainWindow::onStartAudioCall);
+    connect(m_chatHeader, &ChatHeader::hangupRequested,
+            this, &MainWindow::onHangupRequested);
     connect(m_inputBar, &MessageInputBar::sendRequested,
             this, &MainWindow::onSendText);
     connect(m_chatView, &ChatView::needOlderMessages,
@@ -526,13 +528,30 @@ void MainWindow::syncChatSessions(const QStringList &onlinePeers) {
 
 CallWindow *MainWindow::ensureCallWindow() {
     if (!m_callWindow) {
-        m_callWindow = new CallWindow();
+        // Parented to the main window (the Qt::Window flag in CallWindow
+        // keeps it a separate top-level window): on macOS an orphaned
+        // secondary window can vanish behind other apps with no way back —
+        // ownership ties it to the app so it returns on reactivation.
+        m_callWindow = new CallWindow(this);
         connect(m_callWindow, &CallWindow::acceptRequested,
                 this, &MainWindow::onAcceptIncomingCall);
         connect(m_callWindow, &CallWindow::hangupRequested,
                 this, &MainWindow::onHangupRequested);
     }
     return m_callWindow;
+}
+
+void MainWindow::showCallUi() {
+    CallWindow *w = ensureCallWindow();
+    w->show();
+    w->raise();
+    w->activateWindow();
+    m_chatHeader->setInCall(true);
+}
+
+void MainWindow::hideCallUi() {
+    if (m_callWindow) m_callWindow->hide();
+    m_chatHeader->setInCall(false);
 }
 
 // User-initiated calls reset the redial budget; the automatic path
@@ -562,11 +581,11 @@ void MainWindow::startOutgoingCall(bool withVideo) {
     w->showActive();
     w->setStatus(withVideo ? tr("Видеозвоним… ждём ответа")
                            : tr("Звоним… ждём ответа"));
-    w->show();
+    showCallUi();
     m_webrtc->prepare(withVideo);
     if (!m_webrtc->start()) {
         statusBar()->showMessage(tr("Не удалось запустить камеру/микрофон"), 5000);
-        w->hide();
+        hideCallUi();
         return;
     }
     m_webrtc->startCall(m_currentContact.id);
@@ -611,7 +630,7 @@ void MainWindow::onIncomingOffer(const QString &fromPeerId, const QString &sdp,
                                 : fromPeerId);
         w->showActive();
         w->setStatus(tr("Восстанавливаем связь…"));
-        w->show();
+        showCallUi();
         onAcceptIncomingCall();
         return;
     }
@@ -643,6 +662,7 @@ void MainWindow::onIncomingOffer(const QString &fromPeerId, const QString &sdp,
         ? m_contactsModel->contactAt(callerRow).displayName : fromPeerId;
     m_pendingOffer = {fromPeerId, sdp, kind != QLatin1String("call-audio")};
     ensureCallWindow()->showIncoming(callerName, m_pendingOffer.video);
+    m_chatHeader->setInCall(true);   // header hang-up doubles as decline
     m_ringtone->start();
 }
 
@@ -660,10 +680,11 @@ void MainWindow::onAcceptIncomingCall() {
     CallWindow *w = ensureCallWindow();
     w->showActive();
     w->setStatus(tr("Соединяем…"));
+    m_chatHeader->setInCall(true);
     m_webrtc->prepare(offer.video);
     if (!m_webrtc->start()) {
         statusBar()->showMessage(tr("Не удалось запустить камеру/микрофон"), 5000);
-        w->hide();
+        hideCallUi();
         return;
     }
     // A video conversation deserves the whole screen.
@@ -706,7 +727,7 @@ void MainWindow::onIncomingBye(const QString &fromPeerId) {
                      m_pendingOffer.video ? tr("Пропущенный видеозвонок")
                                           : tr("Пропущенный звонок"), /*bad=*/true);
         m_pendingOffer = {};
-        if (m_callWindow) m_callWindow->hide();
+        hideCallUi();
         return;
     }
     if (!m_webrtc || m_webrtc->remotePeerId() != fromPeerId) return;
@@ -724,7 +745,7 @@ void MainWindow::onIncomingBye(const QString &fromPeerId) {
         m_activeCallPeer.clear();
     }
     m_webrtc->hangup();
-    if (m_callWindow) m_callWindow->hide();
+    hideCallUi();
     if (wasRinging)
         statusBar()->showMessage(tr("Занято или звонок отклонён"), 6000);
 }
@@ -756,7 +777,7 @@ void MainWindow::onCallConnected() {
 }
 
 void MainWindow::onCallEnded() {
-    if (m_callWindow) m_callWindow->hide();
+    hideCallUi();
 }
 
 void MainWindow::onWebRtcError(const QString &message) {
@@ -848,7 +869,7 @@ void MainWindow::onHangupRequested() {
                      m_pendingOffer.video ? tr("Видеозвонок отклонён")
                                           : tr("Звонок отклонён"), /*bad=*/true);
         m_pendingOffer = {};
-        if (m_callWindow) m_callWindow->hide();
+        hideCallUi();
         return;
     }
     // Tell the CALL peer we hung up — not whoever's conversation happens to
@@ -871,7 +892,7 @@ void MainWindow::onHangupRequested() {
     }
     if (!byePeer.isEmpty()) m_signaling->sendBye(byePeer);
     m_webrtc->hangup();
-    if (m_callWindow) m_callWindow->hide();
+    hideCallUi();
 }
 
 void MainWindow::onOpenSettings() {
