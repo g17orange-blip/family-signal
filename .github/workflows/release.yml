@@ -9,6 +9,19 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      target:
+        description: "Which artifact to build (manual runs only)"
+        type: choice
+        default: all
+        options:
+          - all
+          - signaling
+          - windows
+          - macos          # both arches
+          - macos-arm64     # Apple Silicon only
+          - macos-x86_64    # Intel only
+          - linux
 
 permissions:
   contents: write
@@ -18,8 +31,58 @@ env:
   QT_VERSION: "6.7.3"
 
 jobs:
+  # Resolves what to build. Tag pushes always build everything; a manual
+  # run honours the `target` choice. Every build job gates on these outputs,
+  # and macos-dmg takes its matrix from here so a single arch can be picked.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      signaling: ${{ steps.f.outputs.signaling }}
+      windows:   ${{ steps.f.outputs.windows }}
+      linux:     ${{ steps.f.outputs.linux }}
+      macos_any: ${{ steps.f.outputs.macos_any }}
+      macos_matrix: ${{ steps.f.outputs.macos_matrix }}
+      publish:   ${{ steps.f.outputs.publish }}
+    steps:
+      - id: f
+        shell: bash
+        env:
+          # Empty for tag pushes → treated as "all".
+          TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.target || 'all' }}
+        run: |
+          want() { [ "$TARGET" = all ] || [ "$TARGET" = "$1" ]; }
+          out() { echo "$1=$2" >> "$GITHUB_OUTPUT"; }
+
+          out signaling "$(want signaling && echo true || echo false)"
+          out windows   "$(want windows   && echo true || echo false)"
+          out linux     "$(want linux     && echo true || echo false)"
+
+          legs=()
+          case "$TARGET" in
+            all|macos|macos-arm64)  legs+=('{"runner":"macos-14","arch":"arm64"}') ;;
+          esac
+          case "$TARGET" in
+            all|macos|macos-x86_64) legs+=('{"runner":"macos-15-intel","arch":"x86_64"}') ;;
+          esac
+          if [ ${#legs[@]} -gt 0 ]; then
+            out macos_any true
+          else
+            out macos_any false
+            # A skipped job (if=false) still parses its matrix; give it one
+            # valid placeholder leg so an empty include never errors. It is
+            # never executed because macos_any is false.
+            legs+=('{"runner":"macos-14","arch":"arm64"}')
+          fi
+          IFS=,
+          out macos_matrix "{\"include\":[${legs[*]}]}"
+
+          # Publish a GitHub Release only on tag pushes (never on manual,
+          # possibly-partial builds).
+          [ "${{ github.ref_type }}" = tag ] && out publish true || out publish false
   # ---------------------------------------------------------------- signaling
   signaling:
+    needs: plan
+    if: needs.plan.outputs.signaling == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -45,6 +108,8 @@ jobs:
 
   # -------------------------------------------------------- windows installer
   windows-installer:
+    needs: plan
+    if: needs.plan.outputs.windows == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -134,11 +199,10 @@ jobs:
 
   # ------------------------------------------------------------- macOS .dmg
   macos-dmg:
+    needs: plan
+    if: needs.plan.outputs.macos_any == 'true'
     strategy:
-      matrix:
-        include:
-          - { runner: macos-15-intel, arch: x86_64 }  # Intel
-          - { runner: macos-14, arch: arm64 }          # Apple Silicon
+      matrix: ${{ fromJSON(needs.plan.outputs.macos_matrix) }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -156,6 +220,8 @@ jobs:
 
   # -------------------------------------------------------- Linux AppImage
   linux-appimage:
+    needs: plan
+    if: needs.plan.outputs.linux == 'true'
     runs-on: ubuntu-22.04   # older base for broad glibc compatibility
     steps:
       - uses: actions/checkout@v4
@@ -193,9 +259,13 @@ jobs:
 
   # ---------------------------------------------------------------- release
   release:
-    needs: [signaling, windows-installer, macos-dmg, linux-appimage]
+    needs: [plan, signaling, windows-installer, macos-dmg, linux-appimage]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    # Only tag pushes publish, and only when every build succeeded. On a tag
+    # plan resolves target=all, so none of the needs are skipped; the
+    # !failure/!cancelled guard just keeps a broken build from publishing a
+    # half-empty release.
+    if: needs.plan.outputs.publish == 'true' && !failure() && !cancelled()
     steps:
       - uses: actions/download-artifact@v4
         with:
