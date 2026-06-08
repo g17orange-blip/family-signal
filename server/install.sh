@@ -176,8 +176,16 @@ denied-peer-ip=192.168.0.0-192.168.255.255
 denied-peer-ip=169.254.0.0-169.254.255.255
 denied-peer-ip=127.0.0.0-127.255.255.255
 
-total-quota=100
-user-quota=12
+# Quotas cap concurrent TURN allocations. The whole family shares ONE turn
+# user (signaluser), and relay-only ICE (client default since v0.3.4) makes
+# every call leg allocate a relay — failed/redialed calls leave allocations
+# pinned until their ~10-min lifetime expires. The old user-quota=12 was
+# reached after a handful of dropped calls and then refused every new
+# allocation ("486 Allocation Quota Reached") → calls stuck in ICE checking
+# forever ("worked first, then stopped connecting"). user-quota=0 lifts the
+# per-user cap; total-quota stays as the real ceiling, raised for headroom.
+total-quota=200
+user-quota=0
 max-bps=2000000
 
 log-file=stdout
