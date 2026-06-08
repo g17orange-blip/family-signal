@@ -16,7 +16,7 @@
 
 [Setup]
 AppName={#MyAppName}
-AppVersion=0.3.4
+AppVersion=0.3.5
 AppPublisher=family-signal
 SetupIconFile=..\resources\signal.ico
 DefaultDirName={autopf}\{#MyAppName}
